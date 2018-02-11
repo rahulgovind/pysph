@@ -26,10 +26,11 @@ cdef class OctreeGPU:
         self.use_double = use_double
         self.ctx = get_context()
         self.queue = get_queue()
-
+        self.sorted = False
         self.helper = GPUNNPSHelper(self.ctx, "octree_gpu.mako",
                                     self.use_double)
         self.make_vec = cl.array.vec.make_double3
+        self.neighbor_counts = None
 
         cdef str norm2 = \
             """
@@ -54,30 +55,7 @@ cdef class OctreeGPU:
             input_expr="eye[eye_index(sfc[i], mask, rshift, levels[i] == curr_level)]",
             scan_expr="(across_seg_boundary ? b : a + b)",
             is_segment_start_expr="seg_flag[i]",
-            output_statement=r"""{
-                        octant_vector[i]=item;
-                        if ((levels[i] < curr_level) || offsets[cids[i] - csum_nodes_prev] == -1) {
-                            sfc_next[i] = sfc[i];
-                            levels_next[i] = levels[i];
-                            cids_next[i] = cids[i];
-                            pids_next[i] = pids[i];
-                        } else {
-                            uint2 pbound_here = pbounds[cids[i] - csum_nodes_prev];
-                            char octant = eye_index(sfc[i], mask, rshift, levels[i] == curr_level);
-
-                            global uint *octv = (global uint *)(octant_vector + i);
-                            int sum = (octant == 8) ? (i - pbound_here.s0  + 1) : octv[octant];
-                            sum -= (octant == 0) ? 0 : octv[octant - 1];
-
-                            octv = (global uint *)(octant_vector + pbound_here.s1 - 1);
-                            sum += (octant == 0) ? 0 : octv[octant - 1];
-
-                            levels_next[pbound_here.s0 + sum - 1] = levels[i];
-                            sfc_next[pbound_here.s0 + sum - 1] = sfc[i];
-                            pids_next[pbound_here.s0 + sum - 1] = pids[i];
-                            cids_next[pbound_here.s0 + sum - 1] = octant == 8 ? cids[i] : offsets[cids[i] - csum_nodes_prev] + octant;
-                        }
-                        }""",
+            output_statement=r"""octant_vector[i]=item;""",
             preamble=r"""uint8 constant eye[9] = {
                         (uint8)(1, 1, 1, 1, 1, 1, 1, 1),
                         (uint8)(0, 1, 1, 1, 1, 1, 1, 1),
@@ -107,7 +85,6 @@ cdef class OctreeGPU:
                 if (i == N - 1) { *leaf_count = item; }
             }"""
         )
-
 
     def refresh(self):
         self._calc_cell_size_and_depth()
@@ -198,8 +175,6 @@ cdef class OctreeGPU:
             else:
                 self.depth += 1
 
-
-
             # Allocate new layer
             offsets_temp.append(DeviceArray(np.int32, self.num_nodes[-1]))
             pbounds_temp.append(DeviceArray(cl.cltypes.uint2,
@@ -207,7 +182,6 @@ cdef class OctreeGPU:
 
             self._reorder_particles(depth, octants, offsets_temp[-2], pbounds_temp[-2],
                                     seg_flag, csum_nodes_prev, temp_vars)
-
             num_leaves_here = self._update_node_data(offsets_temp[-2], pbounds_temp[-2],
                                                      offsets_temp[-1], pbounds_temp[-1],
                                                      seg_flag, octants,
@@ -219,6 +193,7 @@ cdef class OctreeGPU:
 
         # Compress all layers into a single array
         self._compress_layers(offsets_temp, pbounds_temp)
+
         return temp_vars, octants, pbounds_temp, offsets_temp, num_leaves_here
 
     def create_temp_vars(self, dict temp_vars):
@@ -238,7 +213,8 @@ cdef class OctreeGPU:
             temp_vars[k] = getattr(self, k)
             setattr(self, k, t)
 
-    def _reorder_particles(self, depth, octants, offsets_parent, pbounds_parent, seg_flag, csum_nodes_prev, dict temp_vars):
+    def _reorder_particles(self, depth, octants, offsets_parent, pbounds_parent, seg_flag, csum_nodes_prev,
+                           dict temp_vars):
         rshift = np.uint8(3 * (self.max_depth - depth - 1))
         mask = np.uint64(7 << rshift)
 
@@ -250,6 +226,15 @@ cdef class OctreeGPU:
                              temp_vars['cids'].array, temp_vars['levels'].array,
                              np.uint8(depth), mask, rshift,
                              np.uint32(csum_nodes_prev))
+        reorder_particles = self.helper.get_kernel('reorder_particles')
+        reorder_particles(self.pids.array, self.pid_keys.array, self.cids.array,
+                          self.levels.array, seg_flag.array,
+                          pbounds_parent.array, offsets_parent.array,
+                          octants.array,
+                          temp_vars['pids'].array, temp_vars['pid_keys'].array,
+                          temp_vars['cids'].array, temp_vars['levels'].array,
+                          np.uint8(depth), mask, rshift,
+                          np.uint32(csum_nodes_prev))
         self.exchange_temp_vars(temp_vars)
 
     def _compress_layers(self, offsets_temp, pbounds_temp):
@@ -271,13 +256,29 @@ cdef class OctreeGPU:
                          np.int32(curr_offset + self.num_nodes[i]))
             curr_offset += self.num_nodes[i]
 
-
     def _nnps_preprocess(self):
-        self.unique_cids, self.unique_cid_count, _ = cl.algorithm.unique(self.cids.array)
+        pa_gpu = self.pa_wrapper.pa.gpu
+        self.neighbour_cids = DeviceArray(np.int32, 27 * self.pa_wrapper.get_number_of_particles())
+        store_neighbor_cids = self.helper.get_kernel('store_neighbor_cids', sorted=self.sorted)
 
+        dtype = np.float64 if self.use_double else np.float32
+        store_neighbor_cids(self.pids.array,
+                            self.offsets.array, self.pbounds.array,
+                            pa_gpu.x, pa_gpu.y, pa_gpu.z, dtype(self.cell_size),
+                            self.make_vec(self.xmin[0], self.xmin[1], self.xmin[2]),
+                            self.neighbour_cids.array,
+                            self.levels.array, np.uint8(self.depth), self.max_depth)
 
     def store_neighbour_counts(self):
-        pass
+        pa_gpu = self.pa_wrapper.pa.gpu
+        store_neighbor_counts = self.helper.get_kernel('store_neighbor_counts', sorted=self.sorted)
+        dtype = np.float64 if self.use_double else np.float32
+        self.neighbor_counts = DeviceArray(np.uint32, n=self.pa_wrapper.get_number_of_particles())
+        self.neighbor_counts.fill(0)
+        store_neighbor_counts(self.pids.array, self.pbounds.array, self.levels.array,
+                              self.neighbour_cids.array,
+                              pa_gpu.x, pa_gpu.y, pa_gpu.z, self.r.array,
+                              self.neighbor_counts.array)
 
     def store_neighbours_pids(self):
         pass

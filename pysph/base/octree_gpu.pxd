@@ -25,6 +25,7 @@ cdef class OctreeGPU:
     cdef public char max_depth
     cdef public char depth
     cdef public bint use_double
+    cdef public bint sorted
 
     cdef object helper
     cdef object ctx
@@ -36,6 +37,7 @@ cdef class OctreeGPU:
     cdef object preamble
 
     # For NNPS
-    cdef object unique_cids
-    cdef int unique_cid_count
-    cdef object neighbour_cids_cache
+    cdef public object unique_cids
+    cdef public int unique_cid_count
+    cdef public object neighbour_cids
+    cdef public object neighbor_counts

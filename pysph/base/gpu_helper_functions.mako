@@ -1,6 +1,6 @@
 //CL//
 
-<%def name="get_helpers()" cached="True">
+<%def name="get_helpers()" cached="False">
     #define NORM2(X, Y, Z) ((X)*(X) + (Y)*(Y) + (Z)*(Z))
 
     #define FIND_CELL_ID(x, y, z, h, c_x, c_y, c_z) \
@@ -93,6 +93,37 @@
 
         return nbr_boxes_length;
     }
+
+    inline char first_set_bit_pos(int x)
+    {
+        char result = 0;
+        // x = x ^ (x & (x - 1));
+        while (x > 0) {
+            x >>= 1;
+            result++;
+        }
+
+        return result;
+    }
+
+    inline void insertion_sort(unsigned long* arr, int n)
+    {
+        int i, j;
+        unsigned long key;
+        for (i = 1; i < n; i++)
+        {
+            key = arr[i];
+            j = i-1;
+
+            while (j >= 0 && arr[j] > key)
+            {
+                arr[j+1] = arr[j];
+                j = j-1;
+            }
+            arr[j+1] = key;
+        }
+    }
+
 
 </%def>
 
