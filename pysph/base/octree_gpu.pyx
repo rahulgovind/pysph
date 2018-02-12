@@ -31,6 +31,7 @@ cdef class OctreeGPU:
                                     self.use_double)
         self.make_vec = cl.array.vec.make_double3
         self.neighbor_counts = None
+        self.neighbors = None
 
         cdef str norm2 = \
             """
@@ -84,6 +85,14 @@ cdef class OctreeGPU:
                 offsets[i] = (prev_item == item ? csum_nodes_next + (8 * (i - item)) : -1);
                 if (i == N - 1) { *leaf_count = item; }
             }"""
+        )
+
+        self.neighbor_count_psum = GenericScanKernel(
+            self.ctx, np.int32, neutral="0",
+            arguments=r"""__global int *neighbor_counts""",
+            input_expr="neighbor_counts[i]",
+            scan_expr="a + b",
+            output_statement=r"""neighbor_counts[i] = prev_item;"""
         )
 
     def refresh(self):
@@ -270,15 +279,28 @@ cdef class OctreeGPU:
                             self.levels.array, np.uint8(self.depth), self.max_depth)
 
     def store_neighbour_counts(self):
+        cdef int n = self.pa_wrapper.get_number_of_particles()
         pa_gpu = self.pa_wrapper.pa.gpu
         store_neighbor_counts = self.helper.get_kernel('store_neighbor_counts', sorted=self.sorted)
         dtype = np.float64 if self.use_double else np.float32
-        self.neighbor_counts = DeviceArray(np.uint32, n=self.pa_wrapper.get_number_of_particles())
+        self.neighbor_counts = DeviceArray(np.uint32, n=(n + 1))
         self.neighbor_counts.fill(0)
         store_neighbor_counts(self.pids.array, self.pbounds.array, self.levels.array,
                               self.neighbour_cids.array,
                               pa_gpu.x, pa_gpu.y, pa_gpu.z, self.r.array,
                               self.neighbor_counts.array)
 
-    def store_neighbours_pids(self):
-        pass
+
+    def store_neighbours(self):
+        cdef int n = self.pa_wrapper.get_number_of_particles()
+        pa_gpu = self.pa_wrapper.pa.gpu
+        dtype = np.float64 if self.use_double else np.float32
+        self.neighbor_count_psum(self.neighbor_counts.array)
+        total_neighbor_count = np.int32(self.neighbor_counts.array[n].get())
+
+        self.neighbors = DeviceArray(np.int32, n=total_neighbor_count)
+        store_neighbors = self.helper.get_kernel('store_neighbors', sorted=self.sorted)
+        store_neighbors(self.pids.array, self.pbounds.array, self.levels.array,
+                              self.neighbour_cids.array,
+                              pa_gpu.x, pa_gpu.y, pa_gpu.z, self.r.array,
+                              self.neighbor_counts.array, self.neighbors.array)

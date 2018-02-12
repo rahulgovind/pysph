@@ -46,7 +46,9 @@ def profile(name, event):
     global _profile_info
     event.wait()
     time = (event.profile.end - event.profile.start) * 1e-9
+    print('Pre:', name, event, time)
     _profile_info[name] += time
+    print('Post:', name, _profile_info[name])
 
 
 def print_profile():
@@ -69,6 +71,7 @@ def profile_kernel(kernel, name):
         event = kernel(*args)
         profile(name, event)
         return event
+
     if get_config().profile:
         return _profile_knl
     else:

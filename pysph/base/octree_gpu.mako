@@ -76,7 +76,7 @@
 </%def>
 
 <%def name="reorder_particles_src()" cached="False">
-    if ((levels[i] < curr_level) || offsets[cids[i] - csum_nodes_prev] == -1) {
+    if (cids[i] < csum_nodes_prev || offsets[cids[i] - csum_nodes_prev] == -1) {
         sfc_next[i] = sfc[i];
         levels_next[i] = levels[i];
         cids_next[i] = cids[i];
@@ -94,7 +94,7 @@
         levels_next[pbound_here.s0 + sum - 1] = levels[i];
         sfc_next[pbound_here.s0 + sum - 1] = sfc[i];
         pids_next[pbound_here.s0 + sum - 1] = pids[i];
-        cids_next[pbound_here.s0 + sum - 1] = octant == 8 ? cids[i] : offsets[cids[i] - csum_nodes_prev] + octant;
+        cids_next[pbound_here.s0 + sum - 1] = (octant == 8 ? cids[i] : (offsets[cids[i] - csum_nodes_prev] + octant));
     }
 </%def>
 
@@ -123,18 +123,24 @@
     }
     child_offset -= csum_nodes;
 
-    global uint *octv = (global uint *)(octant_vector + pbound_here.s1 - 1);
-    % for i in range(8):
-        % if i == 0:
-            pbounds[child_offset] = (uint2)(pbound_here.s0,
-                                            pbound_here.s0 + octv[0]);
-            seg_flag[pbound_here.s0] = 1;
-        % else:
-            pbounds[child_offset + ${i}] = (uint2)(pbound_here.s0 + octv[${i - 1}],
-                                                   pbound_here.s0 + octv[${i}]);
-            seg_flag[pbound_here.s0 + octv[${i - 1}]] = 1;
-        % endif
-    % endfor
+    if (pbound_here.s1 > pbound_here.s0) {
+        global uint *octv = (global uint *)(octant_vector + pbound_here.s1 - 1);
+        % for i in range(8):
+            % if i == 0:
+                pbounds[child_offset] = (uint2)(pbound_here.s0,
+                                                pbound_here.s0 + octv[0]);
+                seg_flag[pbound_here.s0] = 1;
+            % else:
+                pbounds[child_offset + ${i}] = (uint2)(pbound_here.s0 + octv[${i - 1}],
+                                                       pbound_here.s0 + octv[${i}]);
+                seg_flag[pbound_here.s0 + octv[${i - 1}]] = 1;
+            % endif
+        % endfor
+    } else {
+        % for i in range(8):
+            pbounds[child_offset + ${i}] = pbound_here;
+        % endfor
+    }
 </%def>
 
 <%def name="store_neighbor_cids_args(data_t, sorted)" cached="False">
@@ -227,6 +233,49 @@
 
                 if (dist2 > r[pid_dst] * r[pid_dst] || levels[i] < levels[j]) {
                         atom_inc(neighbor_counts + j);
+                }
+            }
+        }
+    }
+</%def>
+
+<%def name="store_neighbors_args(data_t, sorted)" cached="False">
+    int *pids, uint2 *pbounds, char *levels, int *neighbor_cids,
+    ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} *r,
+    int *neighbor_counts,
+    int *neighbors
+</%def>
+
+<%def name="store_neighbors_src(data_t, sorted)" cached="False">
+    int pid = i;
+    % if not sorted:
+        pid = pids[pid];
+    % endif
+
+    int idx = 27 * i;
+    int pbound_idx, pid_dst;
+    ${data_t} r_src2 = r[pid] * r[pid];
+
+    for (int k = 0; k < 27; k++) {
+        if (neighbor_cids[idx + k] < 0)
+            break;
+
+        pbound_idx = neighbor_cids[idx + k];
+        uint2 pbound_here = pbounds[pbound_idx];
+
+        for (int j = pbound_here.s0; j < pbound_here.s1; j++) {
+            % if not sorted:
+                pid_dst = pids[j];
+            % else:
+                pid_dst = j;
+            % endif
+
+            ${data_t} r_avg2 = ((r[pid] + r[pid_dst]) / 2) * ((r[pid] + r[pid_dst]) / 2);
+            ${data_t} dist2 = NORM2(x[pid] - x[pid_dst], y[pid] - y[pid_dst], z[pid] - z[pid_dst]);
+            if (dist2 <= r_src2 && dist2 <= r_avg2 && levels[i] <= levels[j]) {
+                neighbors[atom_inc(neighbor_counts + i)] = j;
+                if (dist2 > r[pid_dst] * r[pid_dst] || levels[i] < levels[j]) {
+                        neighbors[atom_inc(neighbor_counts + j)] = i;
                 }
             }
         }

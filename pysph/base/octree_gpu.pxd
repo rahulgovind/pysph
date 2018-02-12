@@ -33,6 +33,7 @@ cdef class OctreeGPU:
 
     cdef object particle_kernel
     cdef object set_offsets_kernel
+    cdef object neighbor_count_psum
     cdef object make_vec
     cdef object preamble
 
@@ -41,3 +42,4 @@ cdef class OctreeGPU:
     cdef public int unique_cid_count
     cdef public object neighbour_cids
     cdef public object neighbor_counts
+    cdef public object neighbors
