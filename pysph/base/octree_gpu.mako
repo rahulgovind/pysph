@@ -57,8 +57,8 @@
     key = interleave(c_x, c_y, c_z);
     keys[i] = key;
     pids[i] = i;
-    radius[i] = ${data_t}(radius_scale * h[i]);
-    levels[i] = max_depth - (char)first_set_bit_pos(floor(radius[i] / cell_size));
+    radius[i] = radius_scale * h[i];
+    levels[i] = max_depth - (char)first_set_bit_pos((int)(radius[i] / cell_size));
 </%def>
 
 <%def name="reorder_particles_args()" cached="False">
