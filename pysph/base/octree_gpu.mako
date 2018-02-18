@@ -195,6 +195,32 @@
 
 </%def>
 
+<%def name="sort_particles_args(data_t, args1, args2)" cached="False">
+    <%
+        args = ','.join([data_t + ' *' + x for x in (args1 + args2)])
+    %>
+    int *pids, ${args}
+</%def>
+
+<%def name="sort_particles_src(data_t, args1, args2)" cached="False">
+    %for arg1, arg2 in zip(args1, args2):
+        ${arg2}[i] = ${arg1}[pids[i]];
+    %endfor
+</%def>
+
+<%def name="copy_back_args(data_t, args1, args2)" cached="False">
+    <%
+        args = ','.join([data_t + ' *' + x for x in (args1 + args2)])
+    %>
+    int *pids, ${args}
+</%def>
+
+<%def name="copy_back_src(data_t, args1, args2)" cached="False">
+    %for arg1, arg2 in zip(args1, args2):
+        ${arg1}[i] = ${arg2}[i];
+    %endfor
+</%def>
+
 <%def name="store_neighbor_counts_args(data_t, sorted)" cached="False">
     int *pids, uint2 *pbounds, char *levels, int *neighbor_cids,
     ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} *r,
@@ -225,11 +251,13 @@
                 pid_dst = j;
             % endif
 
-            ${data_t} r_avg2 = ((r[pid] + r[pid_dst]) / 2) * ((r[pid] + r[pid_dst]) / 2);
+            ${data_t} r_avg2 = ((r[pid] + r[pid_dst]) / 2);
+            r_avg2 = r_avg2 * r_avg2;
+
             ${data_t} dist2 = NORM2(x[pid] - x[pid_dst], y[pid] - y[pid_dst], z[pid] - z[pid_dst]);
             if (dist2 <= r_src2 && dist2 <= r_avg2 && levels[i] <= levels[j]) {
-                atom_inc(neighbor_counts + i);
 
+                atom_inc(neighbor_counts + i);
 
                 if (dist2 > r[pid_dst] * r[pid_dst] || levels[i] < levels[j]) {
                         atom_inc(neighbor_counts + j);
@@ -239,12 +267,69 @@
     }
 </%def>
 
+## <%def name="store_neighbors_args(data_t, sorted)" cached="False">
+##     int *neighbor_cids, int *pids, uint2 *pbounds, char *levels,
+##     ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} *r,
+##     int *neighbor_counts,
+##     int *neighbors
+## </%def>
+
 <%def name="store_neighbors_args(data_t, sorted)" cached="False">
     int *pids, uint2 *pbounds, char *levels, int *neighbor_cids,
     ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} *r,
     int *neighbor_counts,
     int *neighbors
 </%def>
+
+## <%def name="store_neighbors_src(data_t, sorted)" cached="False">
+##     int s = i / 27;
+##     int pid = s;
+##     % if not sorted:
+##         pid = pids[pid];
+##     % endif
+##
+##     int pbound_idx, pid_dst;
+##     ${data_t} r_src2 = r[pid] * r[pid];
+##
+##     if (neighbor_cids[i] < 0)
+##         PYOPENCL_ELWISE_CONTINUE;
+##
+##     pbound_idx = neighbor_cids[i];
+##     uint2 pbound_here = pbounds[pbound_idx];
+##     ${data_t} r_avg2, dist2;
+##     int c = 0;
+##
+##     ${data_t} x_here = x[pid];
+##     ${data_t} y_here = y[pid];
+##     ${data_t} z_here = z[pid];
+##     ${data_t} r_here = r[pid];
+##
+##
+##     for (int j = pbound_here.s0; j < pbound_here.s1; j++) {
+##         % if not sorted:
+##             pid_dst = pids[j];
+##         % else:
+##             pid_dst = j;
+##         % endif
+##
+##         r_avg2 = ((r_here + r[pid_dst]) / 2);
+##         r_avg2 = r_avg2 * r_avg2;
+##
+##         dist2 = NORM2(x_here - x[pid_dst],
+##                       y_here- y[pid_dst],
+##                       z_here - z[pid_dst]);
+##
+##         if (dist2 <= r_src2 && dist2 <= r_avg2 && levels[s] <= levels[j]) {
+##             neighbors[atom_inc(neighbor_counts + s)] = j;
+##
+##             if (dist2 > r[pid_dst] * r[pid_dst] || levels[s] < levels[j]) {
+##                     neighbors[atom_inc(neighbor_counts + j)] = s;
+##             }
+##
+##         }
+##     }
+##
+## </%def>
 
 <%def name="store_neighbors_src(data_t, sorted)" cached="False">
     int pid = i;
@@ -277,6 +362,7 @@
                 if (dist2 > r[pid_dst] * r[pid_dst] || levels[i] < levels[j]) {
                         neighbors[atom_inc(neighbor_counts + j)] = i;
                 }
+
             }
         }
     }
