@@ -82,7 +82,7 @@ cdef class OctreeGPU:
             input_expr="(pbounds[i].s1 - pbounds[i].s0 <= 1)",
             scan_expr="a + b",
             output_statement=r"""{
-                offsets[i] = (prev_item == item ? csum_nodes_next + (8 * (i - item)) : -1);
+                offsets[i] = ((pbounds[i].s1 - pbounds[i].s0 > 1) ? csum_nodes_next + (8 * (i - item)) : -1);
                 if (i == N - 1) { *leaf_count = item; }
             }"""
         )
@@ -259,10 +259,11 @@ cdef class OctreeGPU:
         append_layer = self.helper.get_kernel('append_layer')
 
         for i in range(self.depth + 1):
-            append_layer(self.offsets.array, self.pbounds.array,
-                         offsets_temp[i].array, pbounds_temp[i].array,
-                         np.int32(curr_offset),
-                         np.int32(curr_offset + self.num_nodes[i]))
+            append_layer(
+                offsets_temp[i].array, pbounds_temp[i].array,
+                self.offsets.array, self.pbounds.array,
+                np.int32(curr_offset)
+            )
             curr_offset += self.num_nodes[i]
 
     def _nnps_preprocess(self):
@@ -285,7 +286,7 @@ cdef class OctreeGPU:
         pa_gpu = self.pa_wrapper.pa.gpu
         init_vars = [pa_gpu.x, pa_gpu.y, pa_gpu.z, pa_gpu.h, self.r.array, ]
         temp_vars = list([DeviceArray(init_vars[i].dtype, init_vars[i].shape[0]).array
-                     for i in range(len(init_vars))])
+                          for i in range(len(init_vars))])
 
         init_arg_names = ('x', 'y', 'z', 'h', 'r')
         temp_arg_names = tuple(x + '_tmp' for x in init_arg_names)
