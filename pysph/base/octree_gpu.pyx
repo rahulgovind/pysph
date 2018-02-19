@@ -3,25 +3,28 @@ import pyopencl.array
 import pyopencl.algorithm
 import pyopencl.cltypes
 from pyopencl.scan import GenericScanKernel
-from pyopencl.scan import GenericDebugScanKernel
-from pyopencl.elementwise import ElementwiseKernel
 
 import numpy as np
 cimport numpy as np
 
 from pysph.base.gpu_nnps_helper import GPUNNPSHelper
-from pysph.base.opencl import DeviceArray, get_config
+from pysph.base.opencl import DeviceArray
 from opencl import get_context, get_queue
 
+cdef int octree_gpu_counter = 0
+
+cdef get_octree_id():
+    global octree_gpu_counter
+    cdef int t
+    t = octree_gpu_counter
+    octree_gpu_counter += 1
+    return t
+
 cdef class OctreeGPU:
-    def __init__(self, NNPSParticleArrayWrapper pa_wrapper, np.ndarray xmin,
-                 np.ndarray xmax, double hmin, double hmax, radius_scale=1.0,
+    def __init__(self, NNPSParticleArrayWrapper pa_wrapper, radius_scale=1.0,
                  bint use_double=False):
         self.pa_wrapper = pa_wrapper
-        self.xmin = xmin
-        self.xmax = xmax
-        self.hmin = hmin
-        self.hmax = hmax
+
         self.radius_scale = radius_scale
         self.use_double = use_double
         self.ctx = get_context()
@@ -30,9 +33,10 @@ cdef class OctreeGPU:
         self.helper = GPUNNPSHelper(self.ctx, "octree_gpu.mako",
                                     self.use_double)
         self.make_vec = cl.array.vec.make_double3
-        self.neighbor_counts = None
-        self.neighbors = None
 
+        self.initialized = False
+
+        self.id = get_octree_id()
         cdef str norm2 = \
             """
             #define NORM2(X, Y, Z) ((X)*(X) + (Y)*(Y) + (Z)*(Z))
@@ -95,11 +99,22 @@ cdef class OctreeGPU:
             output_statement=r"""neighbor_counts[i] = prev_item;"""
         )
 
-    def refresh(self):
+    def refresh(self, np.ndarray xmin, np.ndarray xmax, double hmin):
+        self.xmin = xmin
+        self.xmax = xmax
+        self.hmin = hmin
+
+        self.id = get_octree_id()
         self._calc_cell_size_and_depth()
-        self._initialize_data()
+
+        if not self.initialized:
+            self._initialize_data()
+        else:
+            self._reinitialize_data()
+
         self._bin()
         self._build_tree()
+        self._sort()
 
     def _calc_cell_size_and_depth(self):
         cdef double max_width
@@ -120,6 +135,32 @@ cdef class OctreeGPU:
         # Filled after tree built
         self.pbounds = None
         self.offsets = None
+
+        # NNPS stuff
+        self.neighbour_cids = {}
+        self.neighbor_counts = {}
+        self.neighbors = {}
+        self.neighbors_stored = {}
+
+    def _reinitialize_data(self):
+        num_particles = self.pa_wrapper.get_number_of_particles()
+        self.pids.resize(num_particles)
+        self.pid_keys.resize(num_particles)
+        self.levels.resize(num_particles)
+        dtype = np.float64 if self.use_double else np.float32
+        self.r.resize(num_particles)
+        self.cids.resize(num_particles)
+        self.cids.fill(0)
+
+        # Filled after tree built
+        self.pbounds = None
+        self.offsets = None
+
+        # NNPS Stuff
+        self.neighbour_cids = {}
+        self.neighbor_counts = {}
+        self.neighbors = {}
+        self.neighbors_stored = {}
 
     def _bin(self, ):
         dtype = np.float64 if self.use_double else np.float32
@@ -266,19 +307,6 @@ cdef class OctreeGPU:
             )
             curr_offset += self.num_nodes[i]
 
-    def _nnps_preprocess(self):
-        pa_gpu = self.pa_wrapper.pa.gpu
-        self.neighbour_cids = DeviceArray(np.int32, 27 * self.pa_wrapper.get_number_of_particles())
-        store_neighbor_cids = self.helper.get_kernel('store_neighbor_cids', sorted=self.sorted)
-
-        dtype = np.float64 if self.use_double else np.float32
-        store_neighbor_cids(self.pids.array,
-                            self.offsets.array, self.pbounds.array,
-                            pa_gpu.x, pa_gpu.y, pa_gpu.z, dtype(self.cell_size),
-                            self.make_vec(self.xmin[0], self.xmin[1], self.xmin[2]),
-                            self.neighbour_cids.array,
-                            self.levels.array, np.uint8(self.depth), self.max_depth)
-
     def _sort(self):
         if self.sorted:
             return
@@ -303,32 +331,95 @@ cdef class OctreeGPU:
         self.sorted = True
         del temp_vars
 
-    def store_neighbour_counts(self):
+    def _nnps_preprocess(self, octree_dst):
         cdef int n = self.pa_wrapper.get_number_of_particles()
-        pa_gpu = self.pa_wrapper.pa.gpu
-        store_neighbor_counts = self.helper.get_kernel('store_neighbor_counts', sorted=self.sorted)
+        pa_src = self.pa_wrapper.pa.gpu
+        pa_dst = octree_dst.pa_wrapper.pa.gpu
+        dst_id = octree_dst.id
+
+        self.neighbour_cids[dst_id] = DeviceArray(np.int32, 27 * n)
+
+        # TODO: Resizing
+
+        store_neighbor_cids = self.helper.get_kernel('store_neighbor_cids', sorted=self.sorted)
+
         dtype = np.float64 if self.use_double else np.float32
-        self.neighbor_counts = DeviceArray(np.uint32, n=(n + 1))
-        self.neighbor_counts.fill(0)
+        store_neighbor_cids(self.pids.array,
+                            octree_dst.offsets.array, octree_dst.pbounds.array,
+                            pa_src.x, pa_src.y, pa_src.z, dtype(self.cell_size),
+                            self.make_vec(self.xmin[0], self.xmin[1], self.xmin[2]),
+                            self.neighbour_cids[dst_id].array,
+                            self.levels.array, np.uint8(octree_dst.depth), self.max_depth)
+
+        self.neighbor_counts[dst_id] = DeviceArray(np.uint32, n=(n + 1))
+        self.neighbor_counts[dst_id].fill(0)
+
+    cpdef _store_neighbour_counts(self, OctreeGPU octree_dst):
+        cdef int n_src = self.pa_wrapper.get_number_of_particles()
+        cdef int n_dst = octree_dst.pa_wrapper.get_number_of_particles()
+
+        pa_gpu = self.pa_wrapper.pa.gpu
+        pa_dst = octree_dst.pa_wrapper.pa.gpu
+        dst_id = octree_dst.id
+
+        store_neighbor_counts = self.helper.get_kernel('store_neighbor_counts', sorted=self.sorted)
+
         store_neighbor_counts(
-            self.pids.array, self.pbounds.array, self.levels.array,
-            self.neighbour_cids.array,
+            self.pids.array,
+            octree_dst.pids.array,
+            octree_dst.pbounds.array,
+            self.levels.array, octree_dst.levels.array,
+            self.neighbour_cids[dst_id].array,
             pa_gpu.x, pa_gpu.y, pa_gpu.z, self.r.array,
-            self.neighbor_counts.array
+            pa_dst.x, pa_dst.y, pa_dst.z, octree_dst.r.array,
+            self.neighbor_counts[dst_id].array,
+            octree_dst.neighbor_counts[self.id].array,
         )
 
-    def store_neighbours(self):
+    def _prefix_sum_neighbor_counts(self, octree_dst):
+        cdef int n = self.pa_wrapper.get_number_of_particles()
+        dst_id = octree_dst.id
+        self.neighbor_count_psum(self.neighbor_counts[dst_id].array)
+        total_neighbor_count_src = np.int32(self.neighbor_counts[dst_id].array[n].get())
+        self.neighbors[dst_id] = DeviceArray(np.int32, n=total_neighbor_count_src)
+
+    def _store_neighbours(self, octree_dst):
         cdef int n = self.pa_wrapper.get_number_of_particles()
         pa_gpu = self.pa_wrapper.pa.gpu
-        dtype = np.float64 if self.use_double else np.float32
-        self.neighbor_count_psum(self.neighbor_counts.array)
-        total_neighbor_count = np.int32(self.neighbor_counts.array[n].get())
+        pa_dst = octree_dst.pa_wrapper.pa.gpu
+        dst_id = octree_dst.id
 
-        self.neighbors = DeviceArray(np.int32, n=total_neighbor_count)
         store_neighbors = self.helper.get_kernel('store_neighbors', sorted=self.sorted)
         store_neighbors(
-            self.pids.array, self.pbounds.array, self.levels.array,
-            self.neighbour_cids.array,
+            self.pids.array, octree_dst.pids.array,
+            octree_dst.pbounds.array,
+            self.levels.array, octree_dst.levels.array,
+            self.neighbour_cids[dst_id].array,
             pa_gpu.x, pa_gpu.y, pa_gpu.z, self.r.array,
-            self.neighbor_counts.array, self.neighbors.array
+            pa_dst.x, pa_dst.y, pa_dst.z, octree_dst.r.array,
+            self.neighbor_counts[dst_id].array, octree_dst.neighbor_counts[self.id].array,
+            self.neighbors[dst_id].array, octree_dst.neighbors[self.id].array
         )
+
+    def store_neighbors(self, octree_dst):
+        if octree_dst.id in self.neighbors_stored:
+            return
+
+        self._nnps_preprocess(octree_dst)
+        if self.id != octree_dst.id:
+            octree_dst._nnps_preprocess(self)
+
+        self._store_neighbour_counts(octree_dst)
+        if self.id != octree_dst.id:
+            octree_dst._store_neighbour_counts(self)
+
+        self._prefix_sum_neighbor_counts(octree_dst)
+        if self.id != octree_dst.id:
+            octree_dst._prefix_sum_neighbor_counts(self)
+
+        self._store_neighbours(octree_dst)
+        if self.id != octree_dst.id:
+            octree_dst._store_neighbours(octree_dst)
+
+        octree_dst.neighbors_stored[self.id] = True
+        self.neighbors_stored[self.id] = True

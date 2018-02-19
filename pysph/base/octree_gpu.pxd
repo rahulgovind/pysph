@@ -26,6 +26,8 @@ cdef class OctreeGPU:
     cdef public char depth
     cdef public bint use_double
     cdef public bint sorted
+    cdef public bint initialized
+    cdef public int id
 
     cdef object helper
     cdef object ctx
@@ -43,3 +45,6 @@ cdef class OctreeGPU:
     cdef public object neighbour_cids
     cdef public object neighbor_counts
     cdef public object neighbors
+    cdef public dict neighbors_stored
+
+    cpdef _store_neighbour_counts(self, OctreeGPU)

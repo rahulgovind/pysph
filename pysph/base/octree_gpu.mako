@@ -146,17 +146,17 @@
 
 <%def name="store_neighbor_cids_args(data_t, sorted)" cached="False">
     int *pids,
-    int *offsets, uint2 *pbounds,
+    int *offsets_dst, uint2 *pbounds_dst,
     ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} cell_size,
     ${data_t}3 min,
     int *neighbour_cids,
     char *levels,
-    char octree_depth, char max_depth
+    char octree_depth_dst, char max_depth
 </%def>
 
 <%def name="store_neighbor_cids_src(data_t, sorted)" cached="False">
     int pid = i;
-    char depth_here = MIN(levels[i] - 1, octree_depth);
+    char depth_here = MIN(levels[i] - 1, octree_depth_dst);
     % if not sorted:
         pid = pids[pid];
     % endif
@@ -178,7 +178,7 @@
     % for i, j, k in product(range(-1, 2), repeat=3):
         if ((IN_BOUNDS(c_x + (${i}), 0, max_int) && IN_BOUNDS(c_y + (${j}), 0, max_int) && IN_BOUNDS(c_z + (${k}), 0, max_int))) {
             ulong key = interleave(c_x + (${i}), c_y + (${j}), c_z + (${k}));
-            keys[num_keys++] = find_smallest_containing_node(offsets, key, depth_here);
+            keys[num_keys++] = find_smallest_containing_node(offsets_dst, key, depth_here);
         }
     % endfor
 
@@ -223,88 +223,101 @@
 </%def>
 
 <%def name="store_neighbor_counts_args(data_t, sorted)" cached="False">
-    int *pids, uint2 *pbounds, char *levels, int *neighbor_cids,
-    ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} *r,
-    int *neighbor_counts
+    int *pids_src, int *pids_dst,
+    uint2 *pbounds_dst,
+    char *levels_src, char *levels_dst,
+    int *neighbor_cids,
+    ${data_t} *x_src, ${data_t} *y_src, ${data_t} *z_src, ${data_t} *r_src,
+    ${data_t} *x_dst, ${data_t} *y_dst, ${data_t} *z_dst, ${data_t} *r_dst,
+    int *neighbor_counts_src, int *neighbor_counts_dst
 </%def>
 
 <%def name="store_neighbor_counts_src(data_t, sorted)" cached="False">
-    int pid = i;
+    int pid_src = i;
     % if not sorted:
-        pid = pids[pid];
+        pid_src = pids_src[pid_src];
     % endif
 
     int idx = 27 * i;
     int pbound_idx, pid_dst;
-    ${data_t} r_src2 = r[pid] * r[pid];
+    ${data_t} r_src2 = r_src[pid_src] * r_src[pid_src];
 
     for (int k = 0; k < 27; k++) {
         if (neighbor_cids[idx + k] < 0)
             break;
 
         pbound_idx = neighbor_cids[idx + k];
-        uint2 pbound_here = pbounds[pbound_idx];
+        uint2 pbound_here = pbounds_dst[pbound_idx];
 
         for (int j = pbound_here.s0; j < pbound_here.s1; j++) {
             % if not sorted:
-                pid_dst = pids[j];
+                pid_dst = pids_dst[j];
             % else:
                 pid_dst = j;
             % endif
 
-            ${data_t} r_avg2 = ((r[pid] + r[pid_dst]) / 2);
+            ${data_t} r_avg2 = ((r_src[pid_src] + r_dst[pid_dst]) / 2);
             r_avg2 = r_avg2 * r_avg2;
 
-            ${data_t} dist2 = NORM2(x[pid] - x[pid_dst], y[pid] - y[pid_dst], z[pid] - z[pid_dst]);
-            if (dist2 <= r_src2 && dist2 <= r_avg2 && levels[i] <= levels[j]) {
+            ${data_t} dist2 = NORM2(x_src[pid_src] - x_dst[pid_dst],
+                                    y_src[pid_src] - y_dst[pid_dst],
+                                    z_src[pid_src] - z_dst[pid_dst]);
 
-                atom_inc(neighbor_counts + i);
-
-                if (dist2 > r[pid_dst] * r[pid_dst] || levels[i] < levels[j]) {
-                        atom_inc(neighbor_counts + j);
+            if (dist2 <= r_src2 && dist2 <= r_avg2 && levels_src[i] <= levels_dst[j]) {
+                atom_inc(neighbor_counts_src + i);
+                if (dist2 > r_dst[pid_dst] * r_dst[pid_dst] || levels_src[i] < levels_dst[j]) {
+                        atom_inc(neighbor_counts_dst + j);
                 }
             }
         }
     }
 </%def>
 
+
 <%def name="store_neighbors_args(data_t, sorted)" cached="False">
-    int *pids, uint2 *pbounds, char *levels, int *neighbor_cids,
-    ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} *r,
-    int *neighbor_counts,
-    int *neighbors
+    int *pids_src, int *pids_dst,
+    uint2 *pbounds_dst,
+    char *levels_src, char *levels_dst,
+    int *neighbor_cids,
+    ${data_t} *x_src, ${data_t} *y_src, ${data_t} *z_src, ${data_t} *r_src,
+    ${data_t} *x_dst, ${data_t} *y_dst, ${data_t} *z_dst, ${data_t} *r_dst,
+    int *neighbor_counts_src, int *neighbor_counts_dst,
+    int *neighbors_src, int *neighbors_dst
 </%def>
 
 <%def name="store_neighbors_src(data_t, sorted)" cached="False">
-    int pid = i;
+    int pid_src = i;
     % if not sorted:
-        pid = pids[pid];
+        pid_src = pids_src[pid_src];
     % endif
 
     int idx = 27 * i;
     int pbound_idx, pid_dst;
-    ${data_t} r_src2 = r[pid] * r[pid];
+    ${data_t} r_src2 = r_src[pid_src] * r_src[pid_src];
 
     for (int k = 0; k < 27; k++) {
         if (neighbor_cids[idx + k] < 0)
             break;
 
         pbound_idx = neighbor_cids[idx + k];
-        uint2 pbound_here = pbounds[pbound_idx];
+        uint2 pbound_here = pbounds_dst[pbound_idx];
 
         for (int j = pbound_here.s0; j < pbound_here.s1; j++) {
             % if not sorted:
-                pid_dst = pids[j];
+                pid_dst = pids_dst[j];
             % else:
                 pid_dst = j;
             % endif
 
-            ${data_t} r_avg2 = ((r[pid] + r[pid_dst]) / 2) * ((r[pid] + r[pid_dst]) / 2);
-            ${data_t} dist2 = NORM2(x[pid] - x[pid_dst], y[pid] - y[pid_dst], z[pid] - z[pid_dst]);
-            if (dist2 <= r_src2 && dist2 <= r_avg2 && levels[i] <= levels[j]) {
-                neighbors[atom_inc(neighbor_counts + i)] = j;
-                if (dist2 > r[pid_dst] * r[pid_dst] || levels[i] < levels[j]) {
-                        neighbors[atom_inc(neighbor_counts + j)] = i;
+            ${data_t} r_avg2 = ((r_src[pid_src] + r_dst[pid_dst]) / 2) * ((r_src[pid_src] + r_dst[pid_dst]) / 2);
+            ${data_t} dist2 = NORM2(x_src[pid_src] - x_dst[pid_dst],
+                                    y_src[pid_src] - y_dst[pid_dst],
+                                    z_src[pid_src] - z_dst[pid_dst]);
+
+            if (dist2 <= r_src2 && dist2 <= r_avg2 && levels_src[i] <= levels_dst[j]) {
+                neighbors_src[atom_inc(neighbor_counts_src + i)] = j;
+                if (dist2 > r_dst[pid_dst] * r_dst[pid_dst] || levels_src[i] < levels_dst[j]) {
+                        neighbors_dst[atom_inc(neighbor_counts_dst + j)] = i;
                 }
 
             }
