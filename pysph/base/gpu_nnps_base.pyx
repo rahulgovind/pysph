@@ -32,7 +32,7 @@ from pyopencl.elementwise import ElementwiseKernel
 from pysph.base.nnps_base cimport *
 from pysph.base.config import get_config
 from pysph.base.opencl import (DeviceArray, DeviceHelper, get_context,
-                                get_queue, set_context, set_queue)
+                               get_queue, set_context, set_queue)
 
 # Particle Tag information
 from pyzoltan.core.carray cimport BaseArray, aligned_malloc, aligned_free
@@ -40,9 +40,8 @@ from utils import ParticleTAGS
 
 from nnps_base cimport *
 
-
 cdef class GPUNeighborCache:
-    def __init__(self, GPUNNPS nnps, int dst_index, int src_index):
+    def __init__(self, GPUNNPS nnps, int dst_index, int src_index, bint delegate=False):
         self._dst_index = dst_index
         self._src_index = src_index
         self._nnps = nnps
@@ -57,6 +56,7 @@ cdef class GPUNeighborCache:
         self._nbr_lengths_gpu = DeviceArray(np.uint32, n=n_p)
 
         self._neighbors_gpu = DeviceArray(np.uint32)
+        self._delegate = delegate
 
     #### Public protocol ################################################
 
@@ -70,7 +70,7 @@ cdef class GPUNeighborCache:
             self.copy_to_cpu()
         nbrs.c_reset()
         nbrs.c_set_view(self._neighbors_cpu_ptr + self._start_idx_ptr[d_idx],
-                self._nbr_lengths_ptr[d_idx])
+                        self._nbr_lengths_ptr[d_idx])
 
     #### Private protocol ################################################
 
@@ -81,10 +81,11 @@ cdef class GPUNeighborCache:
         # - don't allocate neighbors_gpu each time.
         # - Don't allocate _nbr_lengths and start_idx.
         total_size_gpu = cl.array.sum(self._nbr_lengths_gpu.array)
-        cdef unsigned long total_size = <unsigned long>(total_size_gpu.get())
+        cdef unsigned long total_size = <unsigned long> (total_size_gpu.get())
 
         # Allocate _neighbors_cpu and neighbors_gpu
-        self._neighbors_gpu.resize(total_size)
+        if not self._delegate:
+            self._neighbors_gpu.resize(total_size)
 
         self._start_idx_gpu = self._nbr_lengths_gpu.copy()
 
@@ -95,8 +96,12 @@ cdef class GPUNeighborCache:
             )
 
         self._get_start_indices(self._start_idx_gpu.array)
-        self._nnps.find_nearest_neighbors_gpu(self._neighbors_gpu.array,
-                self._start_idx_gpu.array)
+
+        if not self._delegate:
+            self._nnps.find_nearest_neighbors_gpu(self._neighbors_gpu.array,
+                                                  self._start_idx_gpu.array)
+        else:
+            self._nnps.find_nearest_neighbors_gpu(self._neighbors_gpu, None)
         self._cached = True
 
     cdef void copy_to_cpu(self):
@@ -121,7 +126,6 @@ cdef class GPUNeighborCache:
     cpdef get_neighbors_gpu(self):
         self.get_neighbors_raw_gpu()
 
-
 cdef class GPUNNPS(NNPSBase):
     """Nearest neighbor query class using the box-sort algorithm.
 
@@ -132,7 +136,7 @@ cdef class GPUNNPS(NNPSBase):
     """
     def __init__(self, int dim, list particles, double radius_scale=2.0,
                  int ghost_layers=1, domain=None, bint cache=True,
-                 bint sort_gids=False, ctx=None):
+                 bint sort_gids=False, ctx=None, self_cache=False):
         """Constructor for NNPS
 
         Parameters
@@ -163,7 +167,7 @@ cdef class GPUNNPS(NNPSBase):
             For testing purpose
         """
         NNPSBase.__init__(self, dim, particles, radius_scale, ghost_layers,
-                domain, cache, sort_gids)
+                          domain, cache, sort_gids)
 
         if ctx is None:
             self.ctx = get_context()
@@ -191,10 +195,9 @@ cdef class GPUNNPS(NNPSBase):
         _cache = []
         for d_idx in range(len(particles)):
             for s_idx in range(len(particles)):
-                _cache.append(GPUNeighborCache(self, d_idx, s_idx))
+                _cache.append(GPUNeighborCache(self, d_idx, s_idx, self_cache))
         self.cache = _cache
         self.use_double = get_config().use_double
-
 
     cdef void get_nearest_neighbors(self, size_t d_idx, UIntArray nbrs):
         if self.use_cache:
@@ -204,9 +207,9 @@ cdef class GPUNNPS(NNPSBase):
             self.find_nearest_neighbors(d_idx, nbrs)
 
     cpdef get_nearest_particles_gpu(self, int src_index, int dst_index):
-        cdef int idx = dst_index*self.narrays + src_index
+        cdef int idx = dst_index * self.narrays + src_index
         if self.src_index != src_index \
-            or self.dst_index != dst_index:
+                or self.dst_index != dst_index:
             self.set_context(src_index, dst_index)
         self.cache[idx].get_neighbors_gpu()
 
@@ -282,16 +285,23 @@ cdef class GPUNNPS(NNPSBase):
 
         # Add a small offset to the limits.
         lx, ly, lz = xmax - xmin, ymax - ymin, zmax - zmin
-        xmin -= lx*0.01; ymin -= ly*0.01; zmin -= lz*0.01
-        xmax += lx*0.01; ymax += ly*0.01; zmax += lz*0.01
+        xmin -= lx * 0.01;
+        ymin -= ly * 0.01;
+        zmin -= lz * 0.01
+        xmax += lx * 0.01;
+        ymax += ly * 0.01;
+        zmax += lz * 0.01
 
         # If all of the dimensions have very small extent give it a unit size.
         _eps = 1e-12
         if (np.abs(xmax - xmin) < _eps) and (np.abs(ymax - ymin) < _eps) \
-            and (np.abs(zmax - zmin) < _eps):
-            xmin -= 0.5; xmax += 0.5
-            ymin -= 0.5; ymax += 0.5
-            zmin -= 0.5; zmax += 0.5
+                and (np.abs(zmax - zmin) < _eps):
+            xmin -= 0.5;
+            xmax += 0.5
+            ymin -= 0.5;
+            ymax += 0.5
+            zmin -= 0.5;
+            zmax += 0.5
 
         # store the minimum and maximum of physical coordinates
         self.xmin = np.asarray([xmin, ymin, zmin])
@@ -305,12 +315,12 @@ cdef class GPUNNPS(NNPSBase):
 
 cdef class BruteForceNNPS(GPUNNPS):
     def __init__(self, int dim, list particles, double radius_scale=2.0,
-            int ghost_layers=1, domain=None, bint cache=True,
-            bint sort_gids=False, ctx=None):
+                 int ghost_layers=1, domain=None, bint cache=True,
+                 bint sort_gids=False, ctx=None):
         GPUNNPS.__init__(self, dim, particles, radius_scale, ghost_layers,
-                domain, cache, sort_gids, ctx)
+                         domain, cache, sort_gids, ctx)
 
-        self.radius_scale2 = radius_scale*radius_scale
+        self.radius_scale2 = radius_scale * radius_scale
         self.src_index = -1
         self.dst_index = -1
         self.sort_gids = sort_gids
@@ -318,9 +328,9 @@ cdef class BruteForceNNPS(GPUNNPS):
         self.update()
 
         cdef str norm2 = \
-                """
-                #define NORM2(X, Y, Z) ((X)*(X) + (Y)*(Y) + (Z)*(Z))
-                """
+            """
+            #define NORM2(X, Y, Z) ((X)*(X) + (Y)*(Y) + (Z)*(Z))
+            """
 
         self.preamble = norm2
 
@@ -337,18 +347,18 @@ cdef class BruteForceNNPS(GPUNNPS):
         """
         GPUNNPS.set_context(self, src_index, dst_index)
 
-        self.src = self.pa_wrappers[ src_index ]
-        self.dst = self.pa_wrappers[ dst_index ]
+        self.src = self.pa_wrappers[src_index]
+        self.dst = self.pa_wrappers[dst_index]
 
     cdef void find_neighbor_lengths(self, nbr_lengths):
         # IMPORTANT NOTE: pyopencl uses the length of the first argument
         # to determine the global work size
         arguments = \
-                """%(data_t)s* d_x, %(data_t)s* d_y, %(data_t)s* d_z,
-                %(data_t)s* d_h, %(data_t)s* s_x, %(data_t)s* s_y,
-                %(data_t)s* s_z, %(data_t)s* s_h, unsigned int num_particles,
-                unsigned int* nbr_lengths, %(data_t)s radius_scale2
-                """ % {"data_t" : ("double" if self.use_double else "float")}
+            """%(data_t)s* d_x, %(data_t)s* d_y, %(data_t)s* d_z,
+            %(data_t)s* d_h, %(data_t)s* s_x, %(data_t)s* s_y,
+            %(data_t)s* s_z, %(data_t)s* s_h, unsigned int num_particles,
+            unsigned int* nbr_lengths, %(data_t)s radius_scale2
+            """ % {"data_t": ("double" if self.use_double else "float")}
 
         src = """
                 unsigned int j;
@@ -364,7 +374,7 @@ cdef class BruteForceNNPS(GPUNNPS):
                         length += 1;
                 }
                 nbr_lengths[i] = length;
-                """ % {"data_t" : ("double" if self.use_double else "float")}
+                """ % {"data_t": ("double" if self.use_double else "float")}
 
         brute_force_nbr_lengths = ElementwiseKernel(
             self.ctx, arguments, src, "brute_force_nbr_lengths",
@@ -374,19 +384,18 @@ cdef class BruteForceNNPS(GPUNNPS):
         src_gpu = self.src.pa.gpu
         dst_gpu = self.dst.pa.gpu
         brute_force_nbr_lengths(dst_gpu.x, dst_gpu.y, dst_gpu.z,
-                dst_gpu.h, src_gpu.x, src_gpu.y, src_gpu.z,
-                src_gpu.h, self.src.get_number_of_particles(),
-                nbr_lengths, self.radius_scale2)
+                                dst_gpu.h, src_gpu.x, src_gpu.y, src_gpu.z,
+                                src_gpu.h, self.src.get_number_of_particles(),
+                                nbr_lengths, self.radius_scale2)
 
     cdef void find_nearest_neighbors_gpu(self, nbrs, start_indices):
-
         arguments = \
-                """%(data_t)s* d_x, %(data_t)s* d_y, %(data_t)s* d_z,
-                %(data_t)s* d_h, %(data_t)s* s_x, %(data_t)s* s_y,
-                %(data_t)s* s_z, %(data_t)s* s_h, unsigned int num_particles,
-                unsigned int* start_indices, unsigned int* nbrs,
-                %(data_t)s radius_scale2
-                """ % {"data_t" : ("double" if self.use_double else "float")}
+            """%(data_t)s* d_x, %(data_t)s* d_y, %(data_t)s* d_z,
+            %(data_t)s* d_h, %(data_t)s* s_x, %(data_t)s* s_y,
+            %(data_t)s* s_z, %(data_t)s* s_h, unsigned int num_particles,
+            unsigned int* start_indices, unsigned int* nbrs,
+            %(data_t)s radius_scale2
+            """ % {"data_t": ("double" if self.use_double else "float")}
 
         src = """
                 unsigned int j, k = 0;
@@ -404,7 +413,7 @@ cdef class BruteForceNNPS(GPUNNPS):
                         k += 1;
                     }
                 }
-                """ % {"data_t" : ("double" if self.use_double else "float")}
+                """ % {"data_t": ("double" if self.use_double else "float")}
 
         brute_force_nbrs = ElementwiseKernel(
             self.ctx, arguments, src, "brute_force_nbrs",
@@ -414,9 +423,9 @@ cdef class BruteForceNNPS(GPUNNPS):
         src_gpu = self.src.pa.gpu
         dst_gpu = self.dst.pa.gpu
         brute_force_nbrs(dst_gpu.x, dst_gpu.y, dst_gpu.z,
-                dst_gpu.h, src_gpu.x, src_gpu.y, src_gpu.z,
-                src_gpu.h, self.src.get_number_of_particles(),
-                start_indices, nbrs, self.radius_scale2)
+                         dst_gpu.h, src_gpu.x, src_gpu.y, src_gpu.z,
+                         src_gpu.h, self.src.get_number_of_particles(),
+                         start_indices, nbrs, self.radius_scale2)
 
     cpdef _bin(self, int pa_index):
         pass

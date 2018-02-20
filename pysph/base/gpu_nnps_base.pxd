@@ -39,6 +39,7 @@ cdef class GPUNeighborCache:
     cdef bint _cached
     cdef public bint _copied_to_cpu
     cdef GPUNNPS _nnps
+    cdef public bint _delegate
 
     cdef public object _neighbors_gpu
     cdef public object _nbr_lengths_gpu
@@ -64,7 +65,6 @@ cdef class GPUNeighborCache:
     cpdef get_neighbors_gpu(self)
 
 cdef class GPUNNPS(NNPSBase):
-
     cdef object ctx
     cdef object queue
 

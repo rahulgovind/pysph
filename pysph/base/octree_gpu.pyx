@@ -32,7 +32,10 @@ cdef class OctreeGPU:
         self.sorted = False
         self.helper = GPUNNPSHelper(self.ctx, "octree_gpu.mako",
                                     self.use_double)
-        self.make_vec = cl.array.vec.make_double3
+        if use_double:
+            self.make_vec = cl.array.vec.make_double3
+        else:
+            self.make_vec = cl.array.vec.make_float3
 
         self.initialized = False
 
@@ -402,8 +405,9 @@ cdef class OctreeGPU:
         )
 
     def store_neighbors(self, octree_dst):
+        print("Store neighbors [{}, {}] called".format(self.id, octree_dst.id))
         if octree_dst.id in self.neighbors_stored:
-            return
+            return self.neighbor_counts[octree_dst.id], self.neighbors[octree_dst.id]
 
         self._nnps_preprocess(octree_dst)
         if self.id != octree_dst.id:
@@ -422,4 +426,6 @@ cdef class OctreeGPU:
             octree_dst._store_neighbours(octree_dst)
 
         octree_dst.neighbors_stored[self.id] = True
-        self.neighbors_stored[self.id] = True
+        self.neighbors_stored[octree_dst.id] = True
+
+        return self.neighbor_counts[octree_dst.id], self.neighbors[octree_dst.id]

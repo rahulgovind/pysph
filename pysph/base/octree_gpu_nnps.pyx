@@ -12,8 +12,7 @@ from pyopencl.elementwise import ElementwiseKernel
 
 import numpy as np
 cimport numpy as np
-
-from pysph.base.gpu_nnps_helper import GPUNNPSHelper
+from pysph.base.opencl import get_context
 from pysph.base.octree_gpu import OctreeGPU
 
 cdef class OctreeGPUNNPS(GPUNNPS):
@@ -22,7 +21,7 @@ cdef class OctreeGPUNNPS(GPUNNPS):
                  bint cache=True, bint sort_gids=False, ctx=None):
         GPUNNPS.__init__(
             self, dim, particles, radius_scale, ghost_layers, domain,
-            cache, sort_gids, ctx
+            cache, sort_gids, ctx, self_cache=True
         )
 
         cdef NNPSParticleArrayWrapper pa_wrapper
@@ -40,6 +39,7 @@ cdef class OctreeGPUNNPS(GPUNNPS):
     cpdef _bin(self, int pa_index):
         """Group particles into bins
         """
+        print('Domain details: ', self.xmin, self.xmax, self.domain.manager.hmin)
         self.octrees[pa_index].refresh(self.xmin, self.xmax,
                                        self.domain.manager.hmin)
 
@@ -58,14 +58,17 @@ cdef class OctreeGPUNNPS(GPUNNPS):
          dst_index: int: the destination index of the particle array.
         """
         GPUNNPS.set_context(self, src_index, dst_index)
-
-        self.src_index = src_index
-        self.dst_index = dst_index
+        self.octrees[src_index].store_neighbors(self.octrees[dst_index])
 
     cdef void find_neighbor_lengths(self, nbr_lengths):
-        self.octrees[self.src_index].store_neighbors(self.octrees[self.dst_index])
-        nbr_lengths.set(self.octrees[self.src_index].neighbor_counts[self.dst_index].array)
+        psum, nbrs = self.octrees[self.src_index].store_neighbors(self.octrees[self.dst_index])
+        undo_prefix_sum = ElementwiseKernel(
+            get_context(), arguments="int *prefix_sum, int *count",
+            operation="count[i] = prefix_sum[i] - (i > 0 ? prefix_sum[i - 1] : 0)"
+        )
 
-    cdef void find_nearest_neighbors_gpu(self, nbrs, start_indices):
-        self.octrees[self.src_index].store_neighbors(self.octrees[self.dst_index])
-        nbrs.set(self.octrees[self.src_index].neighbor_counts[self.dst_index].array)
+        undo_prefix_sum(psum.array, nbr_lengths)
+
+    cdef void find_nearest_neighbors_gpu(self, neighbors, _):
+        psum, nbrs = self.octrees[self.src_index].store_neighbors(self.octrees[self.dst_index])
+        neighbors.set_data(nbrs.array)
