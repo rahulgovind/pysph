@@ -217,13 +217,9 @@ cdef class GPUNNPS(NNPSBase):
         """Spatially order particles such that nearby particles have indices
         nearer each other.  This may improve pre-fetching on the CPU.
         """
-        cdef LongArray indices = LongArray()
-        cdef ParticleArray pa = self.pa_wrappers[pa_index].pa
-        self.get_spatially_ordered_indices(pa_index, indices)
-        cdef BaseArray arr
-
-        for arr in pa.properties.values():
-            arr.c_align_array(indices)
+        indices, callback = self.get_spatially_ordered_indices(pa_index)
+        self.particles[pa_index].gpu.align(indices)
+        callback()
 
     cdef void find_neighbor_lengths(self, nbr_lengths):
         raise NotImplementedError("NNPS :: find_neighbor_lengths called")
@@ -270,18 +266,22 @@ cdef class GPUNNPS(NNPSBase):
         zmin = self.dtype_max
 
         for pa_wrapper in pa_wrappers:
-            x = pa_wrapper.pa.gpu.x
-            y = pa_wrapper.pa.gpu.y
-            z = pa_wrapper.pa.gpu.z
+            x = pa_wrapper.pa.gpu.get_device_array('x')
+            y = pa_wrapper.pa.gpu.get_device_array('y')
+            z = pa_wrapper.pa.gpu.get_device_array('z')
+
+            x.update_min_max()
+            y.update_min_max()
+            z.update_min_max()
 
             # find min and max of variables
-            xmax = np.maximum(cl.array.max(x).get(), xmax)
-            ymax = np.maximum(cl.array.max(y).get(), ymax)
-            zmax = np.maximum(cl.array.max(z).get(), zmax)
+            xmax = np.maximum(x.maximum, xmax)
+            ymax = np.maximum(y.maximum, ymax)
+            zmax = np.maximum(z.maximum, zmax)
 
-            xmin = np.minimum(cl.array.min(x).get(), xmin)
-            ymin = np.minimum(cl.array.min(y).get(), ymin)
-            zmin = np.minimum(cl.array.min(z).get(), zmin)
+            xmin = np.minimum(x.minimum, xmin)
+            ymin = np.minimum(y.minimum, ymin)
+            zmin = np.minimum(z.minimum, zmin)
 
         # Add a small offset to the limits.
         lx, ly, lz = xmax - xmin, ymax - ymin, zmax - zmin
@@ -312,6 +312,7 @@ cdef class GPUNNPS(NNPSBase):
 
     cpdef _refresh(self):
         raise NotImplementedError("NNPS :: _refresh called")
+
 
 cdef class BruteForceNNPS(GPUNNPS):
     def __init__(self, int dim, list particles, double radius_scale=2.0,
