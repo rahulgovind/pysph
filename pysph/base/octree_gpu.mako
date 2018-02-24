@@ -326,10 +326,9 @@
                                     zs - z_dst[pid_dst]);
 
             if (dist2 <= r_src2 && dist2 <= r_avg2 && ls <= levels_dst[j]) {
-
                 if (dist2 > r_dst[pid_dst] * r_dst[pid_dst] || ls < levels_dst[j]) {
-                        neighbors_src[atom_inc(neighbor_counts_src + i)] = j;
-                        neighbors_dst[atom_inc(neighbor_counts_dst + j)] = i;
+                    neighbors_src[atom_inc(neighbor_counts_src + i)] = j;
+                    neighbors_dst[atom_inc(neighbor_counts_dst + j)] = i;
                 } else {
                     neighbors_src[atom_inc(neighbor_counts_src + i)] = j;
                 }
@@ -338,44 +337,3 @@
         }
     }
 </%def>
-
-## <%def name="store_neighbors_src(data_t, sorted)" cached="False">
-##     int pid_src = i;
-##     % if not sorted:
-##         pid_src = pids_src[pid_src];
-##     % endif
-##
-##     int idx = 27 * i;
-##     int pbound_idx, pid_dst;
-##     ${data_t} r_src2 = r_src[pid_src] * r_src[pid_src];
-##
-##     for (int k = 0; k < 27; k++) {
-##         if (neighbor_cids[idx + k] < 0)
-##             break;
-##
-##         pbound_idx = neighbor_cids[idx + k];
-##         uint2 pbound_here = pbounds_dst[pbound_idx];
-##
-##         for (int j = pbound_here.s0; j < pbound_here.s1; j++) {
-##             % if not sorted:
-##                 pid_dst = pids_dst[j];
-##             % else:
-##                 pid_dst = j;
-##             % endif
-##
-##             ${data_t} r_avg2 = ((r_src[pid_src] + r_dst[pid_dst]) / 2);
-##             r_avg2 = r_avg2 * r_avg2;
-##             ${data_t} dist2 = NORM2(x_src[pid_src] - x_dst[pid_dst],
-##                                     y_src[pid_src] - y_dst[pid_dst],
-##                                     z_src[pid_src] - z_dst[pid_dst]);
-##
-##             if (dist2 <= r_src2 && dist2 <= r_avg2 && levels_src[i] <= levels_dst[j]) {
-##                 neighbors_src[atom_inc(neighbor_counts_src + i)] = j;
-##                 if (dist2 > r_dst[pid_dst] * r_dst[pid_dst] || levels_src[i] < levels_dst[j]) {
-##                         neighbors_dst[atom_inc(neighbor_counts_dst + j)] = i;
-##                 }
-##
-##             }
-##         }
-##     }
-## </%def>
