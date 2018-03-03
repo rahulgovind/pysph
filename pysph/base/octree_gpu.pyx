@@ -315,11 +315,11 @@ cdef class OctreeGPU:
             return
 
         pa_gpu = self.pa_wrapper.pa.gpu
-        init_vars = [pa_gpu.x, pa_gpu.y, pa_gpu.z, pa_gpu.h, self.r.array, ]
+        init_vars = [self.r.array, ]
         temp_vars = list([DeviceArray(init_vars[i].dtype, init_vars[i].shape[0]).array
                           for i in range(len(init_vars))])
 
-        init_arg_names = ('x', 'y', 'z', 'h', 'r')
+        init_arg_names = ('r',)
         temp_arg_names = tuple(x + '_tmp' for x in init_arg_names)
 
         rearrange = self.helper.get_kernel('sort_particles',

@@ -261,14 +261,11 @@
                 pid_dst = j;
             % endif
 
-            ${data_t} r_avg2 = ((rs+ r_dst[pid_dst]) / 2);
-            r_avg2 = r_avg2 * r_avg2;
-
             ${data_t} dist2 = NORM2(xs - x_dst[pid_dst],
                                     ys - y_dst[pid_dst],
                                     zs - z_dst[pid_dst]);
 
-            if (dist2 <= r_src2 && dist2 <= r_avg2 && ls <= levels_dst[j]) {
+            if (dist2 <= r_src2 && ls <= levels_dst[j]) {
                 atom_inc(neighbor_counts_src + i);
                 if (dist2 > r_dst[pid_dst] * r_dst[pid_dst] || ls < levels_dst[j]) {
                         atom_inc(neighbor_counts_dst + j);
@@ -319,13 +316,11 @@
                 pid_dst = j;
             % endif
 
-            ${data_t} r_avg2 = ((rs + r_dst[pid_dst]) / 2);
-            r_avg2 = r_avg2 * r_avg2;
             ${data_t} dist2 = NORM2(xs - x_dst[pid_dst],
                                     ys - y_dst[pid_dst],
                                     zs - z_dst[pid_dst]);
 
-            if (dist2 <= r_src2 && dist2 <= r_avg2 && ls <= levels_dst[j]) {
+            if (dist2 <= r_src2 && ls <= levels_dst[j]) {
                 if (dist2 > r_dst[pid_dst] * r_dst[pid_dst] || ls < levels_dst[j]) {
                     neighbors_src[atom_inc(neighbor_counts_src + i)] = j;
                     neighbors_dst[atom_inc(neighbor_counts_dst + j)] = i;
