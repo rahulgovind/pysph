@@ -1262,7 +1262,7 @@ cdef class NNPS(NNPSBase):
         """
         cdef LongArray indices = LongArray()
         cdef ParticleArray pa = self.pa_wrappers[pa_index].pa
-        self.get_spatially_ordered_indices(pa_index, ind ices)
+        self.get_spatially_ordered_indices(pa_index, indices)
         cdef BaseArray arr
 
         for arr in pa.properties.values():

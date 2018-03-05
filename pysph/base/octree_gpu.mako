@@ -145,6 +145,7 @@
 </%def>
 
 <%def name="store_neighbor_cids_args(data_t, sorted)" cached="False">
+    int *unique_cids_idx,
     int *pids,
     int *offsets_dst, uint2 *pbounds_dst,
     ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} cell_size,
@@ -155,10 +156,13 @@
 </%def>
 
 <%def name="store_neighbor_cids_src(data_t, sorted)" cached="False">
-    int pid = i;
-    char depth_here = MIN(levels[i] - 1, octree_depth_dst);
+    int idx = unique_cids_idx[i];
+    char depth_here = MIN(levels[idx] - 1, octree_depth_dst);
+    int pid;
     % if not sorted:
-        pid = pids[pid];
+        pid = pids[idx];
+    % else:
+        pid = idx;
     % endif
     uint c_x = floor((x[pid] - min.x) / cell_size);
     uint c_y = floor((y[pid] - min.y) / cell_size);
@@ -222,14 +226,23 @@
     %endfor
 </%def>
 
+<%def name="copy_int_args()">\
+    int *src, int *dst
+</%def>
+
+<%def name="copy_int_src()">\
+    dst[i] = src[i];
+</%def>
 <%def name="store_neighbor_counts_args(data_t, sorted)" cached="False">
     int *pids_src, int *pids_dst,
+    int *unique_cids_map,
     uint2 *pbounds_dst,
     char *levels_src, char *levels_dst,
     int *neighbor_cids,
-    ${data_t} *x_src, ${data_t} *y_src, ${data_t} *z_src, ${data_t} *r_src,
-    ${data_t} *x_dst, ${data_t} *y_dst, ${data_t} *z_dst, ${data_t} *r_dst,
-    int *neighbor_counts_src, int *neighbor_counts_dst
+    ${data_t} *x_src, ${data_t} *y_src, ${data_t} *z_src, ${data_t} *h_src,
+    ${data_t} *x_dst, ${data_t} *y_dst, ${data_t} *z_dst, ${data_t} *h_dst,
+    int *neighbor_counts_src, int *neighbor_counts_dst,
+    ${data_t} radius_scale2
 </%def>
 
 <%def name="store_neighbor_counts_src(data_t, sorted)" cached="False">
@@ -238,13 +251,12 @@
         pid_src = pids_src[pid_src];
     % endif
 
-    int idx = 27 * i;
+    int idx = 27 * unique_cids_map[i];
     int pbound_idx, pid_dst;
-    ${data_t} r_src2 = r_src[pid_src] * r_src[pid_src];
+    ${data_t} r_src2 = h_src[pid_src] * h_src[pid_src] * radius_scale2;
     ${data_t} xs = x_src[pid_src];
     ${data_t} ys = y_src[pid_src];
     ${data_t} zs = z_src[pid_src];
-    ${data_t} rs = r_src[pid_src];
     char ls = levels_src[i];
 
     for (int k = 0; k < 27; k++) {
@@ -253,7 +265,6 @@
 
         pbound_idx = neighbor_cids[idx + k];
         uint2 pbound_here = pbounds_dst[pbound_idx];
-
         for (int j = pbound_here.s0; j < pbound_here.s1; j++) {
             % if not sorted:
                 pid_dst = pids_dst[j];
@@ -266,9 +277,9 @@
                                     zs - z_dst[pid_dst]);
 
             if (dist2 <= r_src2 && ls <= levels_dst[j]) {
-                atom_inc(neighbor_counts_src + i);
-                if (dist2 > r_dst[pid_dst] * r_dst[pid_dst] || ls < levels_dst[j]) {
-                        atom_inc(neighbor_counts_dst + j);
+                atom_inc(neighbor_counts_src + pid_src);
+                if (dist2 > h_dst[pid_dst] * h_dst[pid_dst] * radius_scale2 || ls < levels_dst[j]) {
+                        atom_inc(neighbor_counts_dst + pid_dst);
                 }
             }
         }
@@ -278,13 +289,15 @@
 
 <%def name="store_neighbors_args(data_t, sorted)" cached="False">
     int *pids_src, int *pids_dst,
+    int *unique_cids_map,
     uint2 *pbounds_dst,
     char *levels_src, char *levels_dst,
     int *neighbor_cids,
-    ${data_t} *x_src, ${data_t} *y_src, ${data_t} *z_src, ${data_t} *r_src,
-    ${data_t} *x_dst, ${data_t} *y_dst, ${data_t} *z_dst, ${data_t} *r_dst,
+    ${data_t} *x_src, ${data_t} *y_src, ${data_t} *z_src, ${data_t} *h_src,
+    ${data_t} *x_dst, ${data_t} *y_dst, ${data_t} *z_dst, ${data_t} *h_dst,
     int *neighbor_counts_src, int *neighbor_counts_dst,
-    int *neighbors_src, int *neighbors_dst
+    int *neighbors_src, int *neighbors_dst,
+    ${data_t} radius_scale2
 </%def>
 
 <%def name="store_neighbors_src(data_t, sorted)" cached="False">
@@ -293,13 +306,12 @@
         pid_src = pids_src[pid_src];
     % endif
 
-    int idx = 27 * i;
+    int idx = 27 * unique_cids_map[i];
     int pbound_idx, pid_dst;
-    ${data_t} r_src2 = r_src[pid_src] * r_src[pid_src];
+    ${data_t} r_src2 = h_src[pid_src] * h_src[pid_src] * radius_scale2;
     ${data_t} xs = x_src[pid_src];
     ${data_t} ys = y_src[pid_src];
     ${data_t} zs = z_src[pid_src];
-    ${data_t} rs = r_src[pid_src];
     char ls = levels_src[i];
 
     for (int k = 0; k < 27; k++) {
@@ -321,9 +333,9 @@
                                     zs - z_dst[pid_dst]);
 
             if (dist2 <= r_src2 && ls <= levels_dst[j]) {
-                neighbors_src[atom_inc(neighbor_counts_src + i)] = j;
-                if (dist2 > r_dst[pid_dst] * r_dst[pid_dst] || ls < levels_dst[j]) {
-                    neighbors_dst[atom_inc(neighbor_counts_dst + j)] = i;
+                neighbors_src[atom_inc(neighbor_counts_src + pid_src)] = pid_dst;
+                if (dist2 > h_dst[pid_dst] * h_dst[pid_dst] * radius_scale2 || ls < levels_dst[j]) {
+                    neighbors_dst[atom_inc(neighbor_counts_dst + pid_dst)] = pid_src;
                 }
             }
         }

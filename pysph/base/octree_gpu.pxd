@@ -40,10 +40,12 @@ cdef class OctreeGPU:
     cdef object preamble
 
     # For NNPS
-    cdef public object unique_cids
+    cdef public object unique_cids_idx
+    cdef public object unique_cids_map
     cdef public int unique_cid_count
     cdef public object neighbour_cids
     cdef public object neighbor_counts
+    cdef public object neighbor_offsets
     cdef public object neighbors
     cdef public dict neighbors_stored
 

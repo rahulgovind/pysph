@@ -10,6 +10,7 @@ cimport numpy as np
 from pysph.base.gpu_nnps_helper import GPUNNPSHelper
 from pysph.base.opencl import DeviceArray
 from opencl import get_context, get_queue
+from pytools import memoize, memoize_method
 
 cdef int octree_gpu_counter = 0
 
@@ -20,6 +21,92 @@ cdef get_octree_id():
     octree_gpu_counter += 1
     return t
 
+
+class IncompatibleOctreesException(Exception):
+    pass
+
+
+def memoize(f, *args, **kwargs):
+    return f
+
+@memoize
+def _get_particle_kernel(ctx):
+    return GenericScanKernel(
+        ctx, cl.cltypes.uint8, neutral="0",
+        arguments=r"""__global int *pids,
+                    __global ulong *sfc, __global int *cids,
+                    __global char *levels, __global char *seg_flag,
+                    __global uint2 *pbounds,
+                    __global int *offsets,
+                    __global uint8 *octant_vector,
+                    __global int *pids_next, __global ulong *sfc_next,
+                    __global int *cids_next,
+                    __global char *levels_next,
+                    char curr_level, ulong mask, char rshift,
+                    uint csum_nodes_prev""",
+        input_expr="eye[eye_index(sfc[i], mask, rshift, levels[i] == curr_level)]",
+        scan_expr="(across_seg_boundary ? b : a + b)",
+        is_segment_start_expr="seg_flag[i]",
+        output_statement=r"""octant_vector[i]=item;""",
+        preamble=r"""uint8 constant eye[9] = {
+                    (uint8)(1, 1, 1, 1, 1, 1, 1, 1),
+                    (uint8)(0, 1, 1, 1, 1, 1, 1, 1),
+                    (uint8)(0, 0, 1, 1, 1, 1, 1, 1),
+                    (uint8)(0, 0, 0, 1, 1, 1, 1, 1),
+                    (uint8)(0, 0, 0, 0, 1, 1, 1, 1),
+                    (uint8)(0, 0, 0, 0, 0, 1, 1, 1),
+                    (uint8)(0, 0, 0, 0, 0, 0, 1, 1),
+                    (uint8)(0, 0, 0, 0, 0, 0, 0, 1),
+                    (uint8)(0, 0, 0, 0, 0, 0, 0, 0)
+                    };
+
+                    char eye_index(ulong sfc, ulong mask, char rshift, bool same_level) {
+                        return (same_level ? 8 : ((sfc & mask) >> rshift));
+                    }
+                    """
+    )
+
+@memoize
+def _get_set_offset_kernel(ctx):
+    return GenericScanKernel(
+        ctx, np.int32, neutral="0",
+        arguments=r"""__global uint2 *pbounds, __global uint *offsets,
+                      __global int *leaf_count, int csum_nodes_next""",
+        input_expr="(pbounds[i].s1 - pbounds[i].s0 <= 1)",
+        scan_expr="a + b",
+        output_statement=r"""{
+            offsets[i] = ((pbounds[i].s1 - pbounds[i].s0 > 1) ? csum_nodes_next + (8 * (i - item)) : -1);
+            if (i == N - 1) { *leaf_count = item; }
+        }"""
+    )
+
+@memoize
+def _get_neighbor_psum_kernel(ctx):
+    return GenericScanKernel(
+        ctx, np.int32, neutral="0",
+        arguments=r"""__global int *neighbor_counts""",
+        input_expr="neighbor_counts[i]",
+        scan_expr="a + b",
+        output_statement=r"""neighbor_counts[i] = prev_item;"""
+    )
+
+
+@memoize
+def _get_unique_cids_kernel(ctx):
+    return GenericScanKernel(
+        ctx, np.int32, neutral="0",
+        arguments=r"""int *cids, int *unique_cids_map,
+                int *unique_cids_idx, int *unique_cids_count""",
+        input_expr="(i == 0 || cids[i] != cids[i-1])",
+        scan_expr="a + b",
+        output_statement=r"""
+            if (item != prev_item) {
+                unique_cids_idx[item - 1] = i;
+            }
+            unique_cids_map[i] = item - 1;
+            if (i == N - 1) *unique_cids_count = item;
+        """
+    )
 cdef class OctreeGPU:
     def __init__(self, NNPSParticleArrayWrapper pa_wrapper, radius_scale=1.0,
                  bint use_double=False):
@@ -47,61 +134,6 @@ cdef class OctreeGPU:
 
         self.preamble = norm2
 
-        self.particle_kernel = GenericScanKernel(
-            self.ctx, cl.cltypes.uint8, neutral="0",
-            arguments=r"""__global int *pids,
-                        __global ulong *sfc, __global int *cids,
-                        __global char *levels, __global char *seg_flag,
-                        __global uint2 *pbounds,
-                        __global int *offsets,
-                        __global uint8 *octant_vector,
-                        __global int *pids_next, __global ulong *sfc_next,
-                        __global int *cids_next,
-                        __global char *levels_next,
-                        char curr_level, ulong mask, char rshift,
-                        uint csum_nodes_prev""",
-            input_expr="eye[eye_index(sfc[i], mask, rshift, levels[i] == curr_level)]",
-            scan_expr="(across_seg_boundary ? b : a + b)",
-            is_segment_start_expr="seg_flag[i]",
-            output_statement=r"""octant_vector[i]=item;""",
-            preamble=r"""uint8 constant eye[9] = {
-                        (uint8)(1, 1, 1, 1, 1, 1, 1, 1),
-                        (uint8)(0, 1, 1, 1, 1, 1, 1, 1),
-                        (uint8)(0, 0, 1, 1, 1, 1, 1, 1),
-                        (uint8)(0, 0, 0, 1, 1, 1, 1, 1),
-                        (uint8)(0, 0, 0, 0, 1, 1, 1, 1),
-                        (uint8)(0, 0, 0, 0, 0, 1, 1, 1),
-                        (uint8)(0, 0, 0, 0, 0, 0, 1, 1),
-                        (uint8)(0, 0, 0, 0, 0, 0, 0, 1),
-                        (uint8)(0, 0, 0, 0, 0, 0, 0, 0)
-                        };
-
-                        char eye_index(ulong sfc, ulong mask, char rshift, bool same_level) {
-                            return (same_level ? 8 : ((sfc & mask) >> rshift));
-                        }
-                        """
-        )
-
-        self.set_offsets_kernel = GenericScanKernel(
-            self.ctx, np.int32, neutral="0",
-            arguments=r"""__global uint2 *pbounds, __global uint *offsets,
-                          __global int *leaf_count, int csum_nodes_next""",
-            input_expr="(pbounds[i].s1 - pbounds[i].s0 <= 1)",
-            scan_expr="a + b",
-            output_statement=r"""{
-                offsets[i] = ((pbounds[i].s1 - pbounds[i].s0 > 1) ? csum_nodes_next + (8 * (i - item)) : -1);
-                if (i == N - 1) { *leaf_count = item; }
-            }"""
-        )
-
-        self.neighbor_count_psum = GenericScanKernel(
-            self.ctx, np.int32, neutral="0",
-            arguments=r"""__global int *neighbor_counts""",
-            input_expr="neighbor_counts[i]",
-            scan_expr="a + b",
-            output_statement=r"""neighbor_counts[i] = prev_item;"""
-        )
-
     def refresh(self, np.ndarray xmin, np.ndarray xmax, double hmin):
         self.xmin = xmin
         self.xmax = xmax
@@ -117,7 +149,6 @@ cdef class OctreeGPU:
 
         self._bin()
         self._build_tree()
-        self._sort()
 
     def _calc_cell_size_and_depth(self):
         cdef double max_width
@@ -142,6 +173,7 @@ cdef class OctreeGPU:
         # NNPS stuff
         self.neighbour_cids = {}
         self.neighbor_counts = {}
+        self.neighbor_offsets = {}
         self.neighbors = {}
         self.neighbors_stored = {}
 
@@ -162,6 +194,7 @@ cdef class OctreeGPU:
         # NNPS Stuff
         self.neighbour_cids = {}
         self.neighbor_counts = {}
+        self.neighbor_offsets = {}
         self.neighbors = {}
         self.neighbors_stored = {}
 
@@ -187,8 +220,9 @@ cdef class OctreeGPU:
 
         # Set children offsets
         leaf_count = DeviceArray(np.uint32, 1)
-        self.set_offsets_kernel(pbounds.array, offsets.array, leaf_count.array,
-                                np.uint32(csum_nodes_next))
+        set_offsets = _get_set_offset_kernel(self.ctx)
+        set_offsets(pbounds.array, offsets.array, leaf_count.array,
+                    np.uint32(csum_nodes_next))
         return leaf_count.array[0].get()
 
     def _refresh(self):
@@ -247,6 +281,13 @@ cdef class OctreeGPU:
         # Compress all layers into a single array
         self._compress_layers(offsets_temp, pbounds_temp)
 
+        self.unique_cids_idx = DeviceArray(np.uint32, n=n)
+        self.unique_cids_map = DeviceArray(np.uint32, n=n)
+        uniq_count = DeviceArray(np.uint32, n=1)
+        unique_cids_kernel = _get_unique_cids_kernel(self.ctx)
+        unique_cids_kernel(self.cids.array, self.unique_cids_map.array,
+                           self.unique_cids_idx.array, uniq_count.array)
+        self.unique_cid_count = uniq_count.array[0].get()
         return temp_vars, octants, pbounds_temp, offsets_temp, num_leaves_here
 
     def create_temp_vars(self, dict temp_vars):
@@ -271,14 +312,17 @@ cdef class OctreeGPU:
         rshift = np.uint8(3 * (self.max_depth - depth - 1))
         mask = np.uint64(7 << rshift)
 
-        self.particle_kernel(self.pids.array, self.pid_keys.array, self.cids.array,
-                             self.levels.array, seg_flag.array,
-                             pbounds_parent.array, offsets_parent.array,
-                             octants.array,
-                             temp_vars['pids'].array, temp_vars['pid_keys'].array,
-                             temp_vars['cids'].array, temp_vars['levels'].array,
-                             np.uint8(depth), mask, rshift,
-                             np.uint32(csum_nodes_prev))
+        particle_kernel = _get_particle_kernel(self.ctx)
+
+        particle_kernel(self.pids.array, self.pid_keys.array, self.cids.array,
+                        self.levels.array, seg_flag.array,
+                        pbounds_parent.array, offsets_parent.array,
+                        octants.array,
+                        temp_vars['pids'].array, temp_vars['pid_keys'].array,
+                        temp_vars['cids'].array, temp_vars['levels'].array,
+                        np.uint8(depth), mask, rshift,
+                        np.uint32(csum_nodes_prev))
+
         reorder_particles = self.helper.get_kernel('reorder_particles')
         reorder_particles(self.pids.array, self.pid_keys.array, self.cids.array,
                           self.levels.array, seg_flag.array,
@@ -311,28 +355,8 @@ cdef class OctreeGPU:
             curr_offset += self.num_nodes[i]
 
     def _sort(self):
-        if self.sorted:
-            return
-
-        pa_gpu = self.pa_wrapper.pa.gpu
-        init_vars = [self.r.array, ]
-        temp_vars = list([DeviceArray(init_vars[i].dtype, init_vars[i].shape[0]).array
-                          for i in range(len(init_vars))])
-
-        init_arg_names = ('r',)
-        temp_arg_names = tuple(x + '_tmp' for x in init_arg_names)
-
-        rearrange = self.helper.get_kernel('sort_particles',
-                                           args1=init_arg_names,
-                                           args2=temp_arg_names)
-
-        rearrange(self.pids.array, *(init_vars + temp_vars))
-        copy_back = self.helper.get_kernel('copy_back',
-                                           args1=init_arg_names,
-                                           args2=temp_arg_names)
-        copy_back(self.pids.array, *(init_vars + temp_vars))
-        self.sorted = True
-        del temp_vars
+        if not self.sorted:
+            self.sorted = True
 
     def _nnps_preprocess(self, octree_dst):
         cdef int n = self.pa_wrapper.get_number_of_particles()
@@ -343,11 +367,11 @@ cdef class OctreeGPU:
         self.neighbour_cids[dst_id] = DeviceArray(np.int32, 27 * n)
 
         # TODO: Resizing
-
         store_neighbor_cids = self.helper.get_kernel('store_neighbor_cids', sorted=self.sorted)
 
         dtype = np.float64 if self.use_double else np.float32
-        store_neighbor_cids(self.pids.array,
+        store_neighbor_cids(self.unique_cids_idx.array[:self.unique_cid_count],
+                            self.pids.array,
                             octree_dst.offsets.array, octree_dst.pbounds.array,
                             pa_src.x, pa_src.y, pa_src.z, dtype(self.cell_size),
                             self.make_vec(self.xmin[0], self.xmin[1], self.xmin[2]),
@@ -356,6 +380,7 @@ cdef class OctreeGPU:
 
         self.neighbor_counts[dst_id] = DeviceArray(np.uint32, n=(n + 1))
         self.neighbor_counts[dst_id].fill(0)
+        self.neighbor_offsets[dst_id] = DeviceArray(np.uint32, n=(n + 1))
 
     cpdef _store_neighbour_counts(self, OctreeGPU octree_dst):
         cdef int n_src = self.pa_wrapper.get_number_of_particles()
@@ -370,6 +395,7 @@ cdef class OctreeGPU:
         store_neighbor_counts(
             self.pids.array,
             octree_dst.pids.array,
+            self.unique_cids_map.array,
             octree_dst.pbounds.array,
             self.levels.array, octree_dst.levels.array,
             self.neighbour_cids[dst_id].array,
@@ -377,13 +403,20 @@ cdef class OctreeGPU:
             pa_dst.x, pa_dst.y, pa_dst.z, octree_dst.r.array,
             self.neighbor_counts[dst_id].array,
             octree_dst.neighbor_counts[self.id].array,
+            self.radius_scale * self.radius_scale
         )
+
+        copy_kernel = self.helper.get_kernel('copy_int')
+        copy_kernel(self.neighbor_counts[dst_id].array,
+                    self.neighbor_offsets[dst_id].array)
 
     def _prefix_sum_neighbor_counts(self, octree_dst):
         cdef int n = self.pa_wrapper.get_number_of_particles()
         dst_id = octree_dst.id
-        self.neighbor_count_psum(self.neighbor_counts[dst_id].array)
-        total_neighbor_count_src = np.int32(self.neighbor_counts[dst_id].array[n].get())
+
+        neighbor_count_psum = _get_neighbor_psum_kernel(self.ctx)
+        neighbor_count_psum(self.neighbor_offsets[dst_id].array)
+        total_neighbor_count_src = np.int32(self.neighbor_offsets[dst_id].array[n].get())
         self.neighbors[dst_id] = DeviceArray(np.int32, n=total_neighbor_count_src)
 
     def _store_neighbours(self, octree_dst):
@@ -395,17 +428,25 @@ cdef class OctreeGPU:
         store_neighbors = self.helper.get_kernel('store_neighbors', sorted=self.sorted)
         store_neighbors(
             self.pids.array, octree_dst.pids.array,
+            self.unique_cids_map.array,
             octree_dst.pbounds.array,
             self.levels.array, octree_dst.levels.array,
             self.neighbour_cids[dst_id].array,
             pa_gpu.x, pa_gpu.y, pa_gpu.z, self.r.array,
             pa_dst.x, pa_dst.y, pa_dst.z, octree_dst.r.array,
-            self.neighbor_counts[dst_id].array, octree_dst.neighbor_counts[self.id].array,
-            self.neighbors[dst_id].array, octree_dst.neighbors[self.id].array
+            self.neighbor_offsets[dst_id].array,
+            octree_dst.neighbor_offsets[self.id].array,
+            self.neighbors[dst_id].array, octree_dst.neighbors[self.id].array,
+            self.radius_scale * self.radius_scale
         )
 
     def store_neighbors(self, octree_dst):
-        print("Store neighbors [{}, {}] called".format(self.id, octree_dst.id))
+        if self.sorted != octree_dst.sorted:
+            raise IncompatibleOctreesException(
+                """Particles within both octrees need to be
+                either sorted or unsorted"""
+            )
+
         if octree_dst.id in self.neighbors_stored:
             return self.neighbor_counts[octree_dst.id], self.neighbors[octree_dst.id]
 
