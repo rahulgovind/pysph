@@ -321,13 +321,10 @@
                                     zs - z_dst[pid_dst]);
 
             if (dist2 <= r_src2 && ls <= levels_dst[j]) {
+                neighbors_src[atom_inc(neighbor_counts_src + i)] = j;
                 if (dist2 > r_dst[pid_dst] * r_dst[pid_dst] || ls < levels_dst[j]) {
-                    neighbors_src[atom_inc(neighbor_counts_src + i)] = j;
                     neighbors_dst[atom_inc(neighbor_counts_dst + j)] = i;
-                } else {
-                    neighbors_src[atom_inc(neighbor_counts_src + i)] = j;
                 }
-
             }
         }
     }
