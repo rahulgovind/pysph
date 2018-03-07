@@ -1,10 +1,12 @@
-
 from pyopencl.elementwise import ElementwiseKernel
 from mako.template import Template
 import os
 import sys
 
 from pysph.base.opencl import profile_kernel, get_elwise_kernel
+
+
+
 
 
 class GPUNNPSHelper(object):
@@ -38,14 +40,14 @@ class GPUNNPSHelper(object):
 
     def _get_code(self, kernel_name, **kwargs):
         arguments = self.src_tpl.get_def("%s_args" % kernel_name).render(
-                data_t=self.data_t, **kwargs)
+            data_t=self.data_t, **kwargs)
 
         src = self.src_tpl.get_def("%s_src" % kernel_name).render(
-                data_t=self.data_t, **kwargs)
+            data_t=self.data_t, **kwargs)
 
         return arguments, src
 
-    def get_kernel(self, kernel_name, **kwargs):
+    def get_kernel(self, kernel_name, use_elwise=True, **kwargs):
         data = kernel_name, tuple(kwargs.items())
         if data in self.cache:
             return self.cache[data]

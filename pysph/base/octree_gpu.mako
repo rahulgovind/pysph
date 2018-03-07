@@ -6,6 +6,7 @@
     #define NORM2(X, Y, Z) ((X)*(X) + (Y)*(Y) + (Z)*(Z))
     #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
     #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
+    #define EPS 1e-6
     inline uint find_smallest_containing_node(global int *offsets, ulong key, char max_depth)
     {
         uint curr = 0;
@@ -242,18 +243,21 @@
     ${data_t} *x_src, ${data_t} *y_src, ${data_t} *z_src, ${data_t} *h_src,
     ${data_t} *x_dst, ${data_t} *y_dst, ${data_t} *z_dst, ${data_t} *h_dst,
     int *neighbor_counts_src, int *neighbor_counts_dst,
-    ${data_t} radius_scale2
+    ${data_t} radius_scale
 </%def>
 
 <%def name="store_neighbor_counts_src(data_t, sorted)" cached="False">
-    int pid_src = i;
+    int pid_src, pbound_idx, pid_dst;
     % if not sorted:
-        pid_src = pids_src[pid_src];
+        pid_src = pids_src[i];
+    % else:
+        pid_src = i;
     % endif
 
     int idx = 27 * unique_cids_map[i];
-    int pbound_idx, pid_dst;
-    ${data_t} r_src2 = h_src[pid_src] * h_src[pid_src] * radius_scale2;
+    ${data_t} r_src2 = h_src[pid_src] * radius_scale;
+    r_src2 *= r_src2;
+    ${data_t} r_dst2;
     ${data_t} xs = x_src[pid_src];
     ${data_t} ys = y_src[pid_src];
     ${data_t} zs = z_src[pid_src];
@@ -277,9 +281,13 @@
                                     ys - y_dst[pid_dst],
                                     zs - z_dst[pid_dst]);
 
+
+
             if (dist2 <= r_src2 && ls <= levels_dst[j]) {
                 large_nbr_count++;
-                if (dist2 > h_dst[pid_dst] * h_dst[pid_dst] * radius_scale2 || ls < levels_dst[j]) {
+                r_dst2 = h_dst[pid_dst] * radius_scale;
+                r_dst2 *= r_dst2;
+                if (dist2 > r_dst2 || ls < levels_dst[j]) {
                         atom_inc(neighbor_counts_dst + pid_dst);
                 }
             }
@@ -299,7 +307,7 @@
     ${data_t} *x_dst, ${data_t} *y_dst, ${data_t} *z_dst, ${data_t} *h_dst,
     int *neighbor_counts_src, int *neighbor_counts_dst,
     int *neighbors_src, int *neighbors_dst,
-    ${data_t} radius_scale2
+    ${data_t} radius_scale
 </%def>
 
 <%def name="store_neighbors_src(data_t, sorted)" cached="False">
@@ -313,7 +321,9 @@
 
     int idx = 27 * unique_cids_map[i];
     int pbound_idx, pid_dst;
-    ${data_t} r_src2 = h_src[pid_src] * h_src[pid_src] * radius_scale2;
+    ${data_t} r_src2 = h_src[pid_src] * radius_scale;
+    r_src2 *= r_src2;
+    ${data_t} r_dst2;
     ${data_t} xs = x_src[pid_src];
     ${data_t} ys = y_src[pid_src];
     ${data_t} zs = z_src[pid_src];
@@ -350,8 +360,9 @@
                     }
                     large_nbr_count = 0;
                 }
-
-                if (dist2 > h_dst[pid_dst] * h_dst[pid_dst] * radius_scale2 || ls < levels_dst[j]) {
+                r_dst2 = h_dst[pid_dst] * radius_scale;
+                r_dst2 *= r_dst2;
+                if (dist2 > r_dst2 || ls < levels_dst[j]) {
                     neighbors_dst[atom_inc(neighbor_counts_dst + pid_dst)] = pid_src;
                 }
             }

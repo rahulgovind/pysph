@@ -31,7 +31,6 @@ cdef class OctreeGPUNNPS(GPUNNPS):
         cdef int i
 
         self.octrees = []
-
         for i in range(self.narrays):
             pa_wrapper = <NNPSParticleArrayWrapper> self.pa_wrappers[i]
             self.octrees.append(OctreeGPU(pa_wrapper, radius_scale, self.use_double))

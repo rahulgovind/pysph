@@ -12,6 +12,8 @@ from pyopencl.elementwise import ElementwiseKernel
 from collections import defaultdict
 from operator import itemgetter
 from mako.template import Template
+from pyopencl.tools import (dtype_to_ctype, VectorArg, ScalarArg,
+                            KernelTemplateBase, dtype_to_c_struct)
 
 import logging
 
@@ -84,7 +86,7 @@ def profile(name, event):
 def print_profile():
     global _profile_info
     profile_info = sorted(_profile_info.items(), key=itemgetter(1),
-                           reverse=True)
+                          reverse=True)
     if len(profile_info) == 0:
         print("No profile information available")
         return
@@ -111,6 +113,22 @@ def profile_kernel(kernel, name):
         return _profile_knl
     else:
         return kernel
+
+
+def profile_with_name(name):
+    def _decorator(f):
+        if name is None:
+            n = f.__name__
+        else:
+            n = name
+
+        def _profiled_kernel_generator(*args, **kwargs):
+            kernel = f(*args, **kwargs)
+            return profile_kernel(kernel, n)
+
+        return _profiled_kernel_generator
+
+    return _decorator
 
 
 def get_elwise_kernel(kernel_name, args, src, preamble=""):
@@ -648,3 +666,110 @@ class DeviceHelper(object):
 
         result_array.set_output_arrays(output_arrays)
         return result_array
+
+
+def get_custom_elwise_program(context, arguments, operation,
+                              name="elwise_kernel", options=[],
+                              preamble="", **kwargs):
+    source = ("""//CL//
+        %(preamble)s
+        #define PYOPENCL_ELWISE_CONTINUE continue
+        __kernel void %(name)s(%(arguments)s)
+        {
+          int lid = get_local_id(0);
+          int gsize = get_global_size(0);
+          int work_group_start = get_local_size(0)*get_group_id(0);
+          long i;
+          %(body)s
+        }
+        """ % {
+        "arguments": ", ".join(arg.declarator() for arg in arguments),
+        "name": name,
+        "preamble": preamble,
+        "body": operation,
+    })
+
+    from pyopencl import Program
+    return Program(context, source).build(options)
+
+
+def get_custom_elwise_kernel_and_types(context, arguments, operation,
+                                       name="elwise_kernel", options=[],
+                                       preamble="",
+                                       **kwargs):
+    from pyopencl.tools import parse_arg_list
+
+    parsed_args = parse_arg_list(arguments, with_offset=True)
+
+    auto_preamble = kwargs.pop("auto_preamble", True)
+
+    pragmas = []
+    includes = []
+    have_double_pragma = False
+    have_complex_include = False
+
+    if auto_preamble:
+        for arg in parsed_args:
+            if arg.dtype in [np.float64, np.complex128]:
+                if not have_double_pragma:
+                    pragmas.append("""
+                        #if __OPENCL_C_VERSION__ < 120
+                        #pragma OPENCL EXTENSION cl_khr_fp64: enable
+                        #endif
+                        #define PYOPENCL_DEFINE_CDOUBLE
+                        """)
+                    have_double_pragma = True
+            if arg.dtype.kind == 'c':
+                if not have_complex_include:
+                    includes.append("#include <pyopencl-complex.h>\n")
+                    have_complex_include = True
+
+    if pragmas or includes:
+        preamble = "\n".join(pragmas + includes) + "\n" + preamble
+
+    parsed_args.append(ScalarArg(np.intp, "n"))
+
+    prg = get_custom_elwise_program(
+        context, parsed_args, operation,
+        name=name, options=options, preamble=preamble,
+        **kwargs)
+
+    from pyopencl.tools import get_arg_list_scalar_arg_dtypes
+
+    kernel = getattr(prg, name)
+    kernel.set_scalar_arg_dtypes(get_arg_list_scalar_arg_dtypes(parsed_args))
+
+    return kernel, parsed_args
+
+
+def get_custom_elwise_kernel(context, arguments, operation,
+                             name="elwise_kernel", options=[], **kwargs):
+    func, arguments = get_custom_elwise_kernel_and_types(
+        context, arguments, operation,
+        name=name, options=options, **kwargs)
+
+    return func
+
+
+class CustomElementwiseKernel(object):
+    """PyOpenCL's elementwise kernel without any of its magic.
+
+    PyOpenCL's elementwise kernel without most of its magic except for:
+    1) Default variables set (i)
+    2) Size determined from 1st parameter
+    """
+
+    def __init__(self, context, arguments, operation,
+                 name="elwise_kernel", options=[], **kwargs):
+        self.context = context
+        self.arguments = arguments
+        self.operation = operation
+        self.name = name
+        self.options = options
+        self.kwargs = kwargs
+
+    def get_kernel(self):
+        pass
+
+    def __call__(self):
+        pass

@@ -9,7 +9,7 @@ cimport numpy as np
 
 from pysph.base.gpu_nnps_helper import GPUNNPSHelper
 from pysph.base.opencl import DeviceArray
-from opencl import get_context, get_queue
+from opencl import get_context, get_queue, profile_with_name
 from pytools import memoize, memoize_method
 
 cdef int octree_gpu_counter = 0
@@ -29,6 +29,8 @@ class IncompatibleOctreesException(Exception):
 def memoize(f, *args, **kwargs):
     return f
 
+
+@profile_with_name('particle_reordering')
 @memoize
 def _get_particle_kernel(ctx):
     return GenericScanKernel(
@@ -66,6 +68,7 @@ def _get_particle_kernel(ctx):
                     """
     )
 
+@profile_with_name('set_offset')
 @memoize
 def _get_set_offset_kernel(ctx):
     return GenericScanKernel(
@@ -80,6 +83,7 @@ def _get_set_offset_kernel(ctx):
         }"""
     )
 
+@profile_with_name('neighbor_psum')
 @memoize
 def _get_neighbor_psum_kernel(ctx):
     return GenericScanKernel(
@@ -90,7 +94,7 @@ def _get_neighbor_psum_kernel(ctx):
         output_statement=r"""neighbor_counts[i] = prev_item;"""
     )
 
-
+@profile_with_name('unique_cids')
 @memoize
 def _get_unique_cids_kernel(ctx):
     return GenericScanKernel(
@@ -107,6 +111,7 @@ def _get_unique_cids_kernel(ctx):
             if (i == N - 1) *unique_cids_count = item;
         """
     )
+
 cdef class OctreeGPU:
     def __init__(self, NNPSParticleArrayWrapper pa_wrapper, radius_scale=1.0,
                  bint use_double=False):
@@ -364,7 +369,8 @@ cdef class OctreeGPU:
         pa_dst = octree_dst.pa_wrapper.pa.gpu
         dst_id = octree_dst.id
 
-        self.neighbour_cids[dst_id] = DeviceArray(np.int32, 27 * n)
+        self.neighbour_cids[dst_id] = DeviceArray(np.int32, 27 * self.unique_cid_count)
+        self.neighbour_cids[dst_id].fill(-1)
 
         # TODO: Resizing
         store_neighbor_cids = self.helper.get_kernel('store_neighbor_cids', sorted=self.sorted)
@@ -399,11 +405,11 @@ cdef class OctreeGPU:
             octree_dst.pbounds.array,
             self.levels.array, octree_dst.levels.array,
             self.neighbour_cids[dst_id].array,
-            pa_gpu.x, pa_gpu.y, pa_gpu.z, self.r.array,
-            pa_dst.x, pa_dst.y, pa_dst.z, octree_dst.r.array,
+            pa_gpu.x, pa_gpu.y, pa_gpu.z, pa_gpu.h,
+            pa_dst.x, pa_dst.y, pa_dst.z, pa_dst.h,
             self.neighbor_counts[dst_id].array,
             octree_dst.neighbor_counts[self.id].array,
-            self.radius_scale * self.radius_scale
+            self.radius_scale
         )
 
         copy_kernel = self.helper.get_kernel('copy_int')
@@ -432,12 +438,12 @@ cdef class OctreeGPU:
             octree_dst.pbounds.array,
             self.levels.array, octree_dst.levels.array,
             self.neighbour_cids[dst_id].array,
-            pa_gpu.x, pa_gpu.y, pa_gpu.z, self.r.array,
-            pa_dst.x, pa_dst.y, pa_dst.z, octree_dst.r.array,
+            pa_gpu.x, pa_gpu.y, pa_gpu.z, pa_gpu.h,
+            pa_dst.x, pa_dst.y, pa_dst.z, pa_dst.h,
             self.neighbor_offsets[dst_id].array,
             octree_dst.neighbor_offsets[self.id].array,
             self.neighbors[dst_id].array, octree_dst.neighbors[self.id].array,
-            self.radius_scale * self.radius_scale
+            self.radius_scale
         )
 
     def store_neighbors(self, octree_dst):
