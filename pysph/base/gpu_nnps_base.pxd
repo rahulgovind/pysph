@@ -40,6 +40,7 @@ cdef class GPUNeighborCache:
     cdef public bint _copied_to_cpu
     cdef GPUNNPS _nnps
     cdef public bint _delegate
+    cdef public bint _allow_sort
 
     cdef public object _neighbors_gpu
     cdef public object _nbr_lengths_gpu

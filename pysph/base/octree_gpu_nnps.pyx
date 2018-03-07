@@ -18,11 +18,14 @@ from pysph.base.octree_gpu import OctreeGPU
 cdef class OctreeGPUNNPS(GPUNNPS):
     def __init__(self, int dim, list particles, double radius_scale=2.0,
                  int ghost_layers=1, domain=None, bint fixed_h=False,
-                 bint cache=True, bint sort_gids=False, ctx=None):
+                 bint cache=True, bint sort_gids=False, ctx=None,
+                 bint allow_sort=False):
         GPUNNPS.__init__(
             self, dim, particles, radius_scale, ghost_layers, domain,
             cache, sort_gids, ctx, self_cache=True
         )
+
+        self.allow_sort = allow_sort
 
         cdef NNPSParticleArrayWrapper pa_wrapper
         cdef int i
@@ -39,9 +42,12 @@ cdef class OctreeGPUNNPS(GPUNNPS):
     cpdef _bin(self, int pa_index):
         """Group particles into bins
         """
-        print('Domain details: ', self.xmin, self.xmax, self.domain.manager.hmin)
         self.octrees[pa_index].refresh(self.xmin, self.xmax,
                                        self.domain.manager.hmin)
+        if self.allow_sort:
+            print("Sorting")
+            for i in range(self.narrays):
+                self.spatially_order_particles(i)
 
     cpdef _refresh(self):
         pass
@@ -70,13 +76,8 @@ cdef class OctreeGPUNNPS(GPUNNPS):
         self.octrees[src_index].store_neighbors(self.octrees[dst_index])
 
     cdef void find_neighbor_lengths(self, nbr_lengths):
-        psum, nbrs = self.octrees[self.src_index].store_neighbors(self.octrees[self.dst_index])
-        undo_prefix_sum = ElementwiseKernel(
-            get_context(), arguments="int *prefix_sum, int *count",
-            operation="count[i] = prefix_sum[i] - (i > 0 ? prefix_sum[i - 1] : 0)"
-        )
-
-        undo_prefix_sum(psum.array, nbr_lengths)
+        counts, nbrs = self.octrees[self.src_index].store_neighbors(self.octrees[self.dst_index])
+        nbr_lengths.set_data(counts.array)
 
     cdef void find_nearest_neighbors_gpu(self, neighbors, _):
         psum, nbrs = self.octrees[self.src_index].store_neighbors(self.octrees[self.dst_index])

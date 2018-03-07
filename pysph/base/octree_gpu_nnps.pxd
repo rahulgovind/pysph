@@ -7,6 +7,7 @@ from pysph.base.gpu_nnps_base cimport *
 cdef class OctreeGPUNNPS(GPUNNPS):
     cdef NNPSParticleArrayWrapper src, dst  # Current source and destination..
     cdef public list octrees
+    cdef public bint allow_sort
 
     cdef void find_neighbor_lengths(self, nbr_lengths)
     cdef void find_nearest_neighbors_gpu(self, nbrs, start_indices)

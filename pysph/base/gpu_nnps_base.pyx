@@ -41,7 +41,8 @@ from utils import ParticleTAGS
 from nnps_base cimport *
 
 cdef class GPUNeighborCache:
-    def __init__(self, GPUNNPS nnps, int dst_index, int src_index, bint delegate=False):
+    def __init__(self, GPUNNPS nnps, int dst_index, int src_index,
+                 bint delegate=False):
         self._dst_index = dst_index
         self._src_index = src_index
         self._nnps = nnps
@@ -57,7 +58,6 @@ cdef class GPUNeighborCache:
 
         self._neighbors_gpu = DeviceArray(np.uint32)
         self._delegate = delegate
-
     #### Public protocol ################################################
 
     cdef void get_neighbors_raw_gpu(self):
@@ -75,7 +75,10 @@ cdef class GPUNeighborCache:
     #### Private protocol ################################################
 
     cdef void _find_neighbors(self):
-        self._nnps.find_neighbor_lengths(self._nbr_lengths_gpu.array)
+        if not self._delegate:
+            self._nnps.find_neighbor_lengths(self._nbr_lengths_gpu.array)
+        else:
+            self._nnps.find_neighbor_lengths(self._nbr_lengths_gpu)
         # FIXME:
         # - Store sum kernel
         # - don't allocate neighbors_gpu each time.

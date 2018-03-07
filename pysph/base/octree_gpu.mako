@@ -103,7 +103,7 @@
 	int *offsets, uint2 *pbounds,
     int curr_offset
 </%def>
-	    
+
 <%def name="append_layer_src()" cached="False">
 	pbounds[curr_offset + i] = pbounds_next[i];
     offsets[curr_offset + i] = offsets_next[i];
@@ -259,6 +259,7 @@
     ${data_t} zs = z_src[pid_src];
     char ls = levels_src[i];
 
+    int large_nbr_count = 0;
     for (int k = 0; k < 27; k++) {
         if (neighbor_cids[idx + k] < 0)
             break;
@@ -277,13 +278,14 @@
                                     zs - z_dst[pid_dst]);
 
             if (dist2 <= r_src2 && ls <= levels_dst[j]) {
-                atom_inc(neighbor_counts_src + pid_src);
+                large_nbr_count++;
                 if (dist2 > h_dst[pid_dst] * h_dst[pid_dst] * radius_scale2 || ls < levels_dst[j]) {
                         atom_inc(neighbor_counts_dst + pid_dst);
                 }
             }
         }
     }
+    atom_add(neighbor_counts_src + pid_src, large_nbr_count);
 </%def>
 
 
@@ -301,6 +303,9 @@
 </%def>
 
 <%def name="store_neighbors_src(data_t, sorted)" cached="False">
+    <%
+        buffer1 = 4
+    %>
     int pid_src = i;
     % if not sorted:
         pid_src = pids_src[pid_src];
@@ -313,6 +318,10 @@
     ${data_t} ys = y_src[pid_src];
     ${data_t} zs = z_src[pid_src];
     char ls = levels_src[i];
+
+    int poffset = neighbor_counts_src[pid_src];
+    int large_nbrs[${buffer1}];
+    char large_nbr_count = 0;
 
     for (int k = 0; k < 27; k++) {
         if (neighbor_cids[idx + k] < 0)
@@ -333,11 +342,24 @@
                                     zs - z_dst[pid_dst]);
 
             if (dist2 <= r_src2 && ls <= levels_dst[j]) {
-                neighbors_src[atom_inc(neighbor_counts_src + pid_src)] = pid_dst;
+                large_nbrs[large_nbr_count++] = pid_dst;
+                if (large_nbr_count == ${buffer1}) {
+                    int m = atom_add(neighbor_counts_src + pid_src, large_nbr_count);
+                    for (int m2=0; m2 < ${buffer1}; m2++) {
+                        neighbors_src[m+m2] = large_nbrs[m2];
+                    }
+                    large_nbr_count = 0;
+                }
+
                 if (dist2 > h_dst[pid_dst] * h_dst[pid_dst] * radius_scale2 || ls < levels_dst[j]) {
                     neighbors_dst[atom_inc(neighbor_counts_dst + pid_dst)] = pid_src;
                 }
             }
         }
+    }
+
+    int m = atom_add(neighbor_counts_src + pid_src, large_nbr_count);
+    for (int m2=0; m2 < large_nbr_count; m2++) {
+        neighbors_src[m+m2] = large_nbrs[m2];
     }
 </%def>

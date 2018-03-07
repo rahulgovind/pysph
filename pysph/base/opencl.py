@@ -14,6 +14,7 @@ from operator import itemgetter
 from mako.template import Template
 
 import logging
+
 logger = logging.getLogger()
 
 from .config import get_config
@@ -24,20 +25,17 @@ _ctx = None
 _queue = None
 _profile_info = defaultdict(float)
 
-
 # args: uint* indices, dtype array, int length
 REMOVE_KNL = Template(r"""//CL//
         unsigned int idx = indices[n - 1 - i];
         array[idx] = array[length - 1 - i];
 """)
 
-
 # args: tag_array, tag, indices, head
 REMOVE_INDICES_KNL = Template(r"""//CL//
         if(tag_array[i] == tag)
             indices[atomic_inc(&head[0])] = i;
 """)
-
 
 # args: tag_array, num_real_particles
 NUM_REAL_PARTICLES_KNL = Template(r"""//CL//
@@ -85,17 +83,22 @@ def profile(name, event):
 
 def print_profile():
     global _profile_info
-    _profile_info = sorted(_profile_info.items(), key=itemgetter(1),
+    profile_info = sorted(_profile_info.items(), key=itemgetter(1),
                            reverse=True)
-    if len(_profile_info) == 0:
+    if len(profile_info) == 0:
         print("No profile information available")
         return
     print("{:<30} {:<30}".format('Kernel', 'Time'))
     tot_time = 0
-    for kernel, time in _profile_info:
+    for kernel, time in profile_info:
         print("{:<30} {:<30}".format(kernel, time))
         tot_time += time
     print("Total profiled time: %g secs" % tot_time)
+
+
+def reset_profile():
+    global _profile_info
+    _profile_info = defaultdict(float)
 
 
 def profile_kernel(kernel, name):
@@ -204,7 +207,7 @@ class DeviceArray(object):
             sorted_indices = indices
 
         args = "uint* indices, %(dtype)s* array, uint length" % \
-            {"dtype": cl.tools.dtype_to_ctype(self.dtype)}
+               {"dtype": cl.tools.dtype_to_ctype(self.dtype)}
         src = REMOVE_KNL.render()
         remove = get_elwise_kernel("remove", args, src)
 
