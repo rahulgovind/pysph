@@ -227,11 +227,11 @@
     %endfor
 </%def>
 
-<%def name="copy_int_args()">\
+<%def name="copy_int_args()" cached="False">\
     int *src, int *dst
 </%def>
 
-<%def name="copy_int_src()">\
+<%def name="copy_int_src()" cached="False">\
     dst[i] = src[i];
 </%def>
 <%def name="store_neighbor_counts_args(data_t, sorted)" cached="False">

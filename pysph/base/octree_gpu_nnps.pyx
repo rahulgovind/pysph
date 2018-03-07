@@ -44,7 +44,6 @@ cdef class OctreeGPUNNPS(GPUNNPS):
         self.octrees[pa_index].refresh(self.xmin, self.xmax,
                                        self.domain.manager.hmin)
         if self.allow_sort:
-            print("Sorting")
             for i in range(self.narrays):
                 self.spatially_order_particles(i)
 
@@ -72,12 +71,12 @@ cdef class OctreeGPUNNPS(GPUNNPS):
          dst_index: int: the destination index of the particle array.
         """
         GPUNNPS.set_context(self, src_index, dst_index)
-        self.octrees[src_index].store_neighbors(self.octrees[dst_index])
+        self.octrees[dst_index].store_neighbors(self.octrees[src_index])
 
     cdef void find_neighbor_lengths(self, nbr_lengths):
-        counts, nbrs = self.octrees[self.src_index].store_neighbors(self.octrees[self.dst_index])
+        counts, _ = self.octrees[self.dst_index].store_neighbors(self.octrees[self.src_index])
         nbr_lengths.set_data(counts.array)
 
     cdef void find_nearest_neighbors_gpu(self, neighbors, _):
-        psum, nbrs = self.octrees[self.src_index].store_neighbors(self.octrees[self.dst_index])
+        _, nbrs = self.octrees[self.dst_index].store_neighbors(self.octrees[self.src_index])
         neighbors.set_data(nbrs.array)

@@ -370,7 +370,6 @@ cdef class OctreeGPU:
         dst_id = octree_dst.id
 
         self.neighbour_cids[dst_id] = DeviceArray(np.int32, 27 * self.unique_cid_count)
-        self.neighbour_cids[dst_id].fill(-1)
 
         # TODO: Resizing
         store_neighbor_cids = self.helper.get_kernel('store_neighbor_cids', sorted=self.sorted)
@@ -379,14 +378,16 @@ cdef class OctreeGPU:
         store_neighbor_cids(self.unique_cids_idx.array[:self.unique_cid_count],
                             self.pids.array,
                             octree_dst.offsets.array, octree_dst.pbounds.array,
-                            pa_src.x, pa_src.y, pa_src.z, dtype(self.cell_size),
+                            pa_src.x, pa_src.y, pa_src.z,
+                            dtype(self.cell_size),
                             self.make_vec(self.xmin[0], self.xmin[1], self.xmin[2]),
                             self.neighbour_cids[dst_id].array,
-                            self.levels.array, np.uint8(octree_dst.depth), self.max_depth)
+                            self.levels.array, np.uint8(octree_dst.depth), octree_dst.max_depth)
 
         self.neighbor_counts[dst_id] = DeviceArray(np.uint32, n=(n + 1))
         self.neighbor_counts[dst_id].fill(0)
         self.neighbor_offsets[dst_id] = DeviceArray(np.uint32, n=(n + 1))
+
 
     cpdef _store_neighbour_counts(self, OctreeGPU octree_dst):
         cdef int n_src = self.pa_wrapper.get_number_of_particles()
@@ -412,13 +413,15 @@ cdef class OctreeGPU:
             self.radius_scale
         )
 
-        copy_kernel = self.helper.get_kernel('copy_int')
-        copy_kernel(self.neighbor_counts[dst_id].array,
-                    self.neighbor_offsets[dst_id].array)
+
 
     def _prefix_sum_neighbor_counts(self, octree_dst):
         cdef int n = self.pa_wrapper.get_number_of_particles()
         dst_id = octree_dst.id
+        copy_kernel = self.helper.get_kernel('copy_int')
+        copy_kernel(self.neighbor_counts[dst_id].array,
+                    self.neighbor_offsets[dst_id].array)
+
 
         neighbor_count_psum = _get_neighbor_psum_kernel(self.ctx)
         neighbor_count_psum(self.neighbor_offsets[dst_id].array)
@@ -470,7 +473,7 @@ cdef class OctreeGPU:
 
         self._store_neighbours(octree_dst)
         if self.id != octree_dst.id:
-            octree_dst._store_neighbours(octree_dst)
+            octree_dst._store_neighbours(self)
 
         octree_dst.neighbors_stored[self.id] = True
         self.neighbors_stored[octree_dst.id] = True
