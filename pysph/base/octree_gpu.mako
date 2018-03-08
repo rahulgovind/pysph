@@ -314,6 +314,7 @@
     <%
         buffer1 = 4
     %>
+
     int pid_src = i;
     % if not sorted:
         pid_src = pids_src[pid_src];
@@ -331,7 +332,7 @@
 
     int poffset = neighbor_counts_src[pid_src];
     int large_nbrs[${buffer1}];
-    char large_nbr_count = 0;
+    char large_nbr_count =  0;
 
     for (int k = 0; k < 27; k++) {
         if (neighbor_cids[idx + k] < 0)
@@ -370,7 +371,9 @@
     }
 
     int m = atom_add(neighbor_counts_src + pid_src, large_nbr_count);
+
     for (int m2=0; m2 < large_nbr_count; m2++) {
         neighbors_src[m+m2] = large_nbrs[m2];
     }
+
 </%def>

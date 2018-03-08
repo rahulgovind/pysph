@@ -668,7 +668,7 @@ class DeviceHelper(object):
         return result_array
 
 
-def get_custom_elwise_program(context, arguments, operation,
+def get_simple_elwise_program(context, arguments, operation,
                               name="elwise_kernel", options=[],
                               preamble="", **kwargs):
     source = ("""//CL//
@@ -679,7 +679,7 @@ def get_custom_elwise_program(context, arguments, operation,
           int lid = get_local_id(0);
           int gsize = get_global_size(0);
           int work_group_start = get_local_size(0)*get_group_id(0);
-          long i;
+          int i = get_global_id(0);
           %(body)s
         }
         """ % {
@@ -693,7 +693,7 @@ def get_custom_elwise_program(context, arguments, operation,
     return Program(context, source).build(options)
 
 
-def get_custom_elwise_kernel_and_types(context, arguments, operation,
+def get_simple_elwise_kernel_and_types(context, arguments, operation,
                                        name="elwise_kernel", options=[],
                                        preamble="",
                                        **kwargs):
@@ -701,35 +701,15 @@ def get_custom_elwise_kernel_and_types(context, arguments, operation,
 
     parsed_args = parse_arg_list(arguments, with_offset=True)
 
-    auto_preamble = kwargs.pop("auto_preamble", True)
-
     pragmas = []
     includes = []
-    have_double_pragma = False
-    have_complex_include = False
-
-    if auto_preamble:
-        for arg in parsed_args:
-            if arg.dtype in [np.float64, np.complex128]:
-                if not have_double_pragma:
-                    pragmas.append("""
-                        #if __OPENCL_C_VERSION__ < 120
-                        #pragma OPENCL EXTENSION cl_khr_fp64: enable
-                        #endif
-                        #define PYOPENCL_DEFINE_CDOUBLE
-                        """)
-                    have_double_pragma = True
-            if arg.dtype.kind == 'c':
-                if not have_complex_include:
-                    includes.append("#include <pyopencl-complex.h>\n")
-                    have_complex_include = True
 
     if pragmas or includes:
         preamble = "\n".join(pragmas + includes) + "\n" + preamble
 
     parsed_args.append(ScalarArg(np.intp, "n"))
 
-    prg = get_custom_elwise_program(
+    prg = get_simple_elwise_program(
         context, parsed_args, operation,
         name=name, options=options, preamble=preamble,
         **kwargs)
@@ -742,16 +722,16 @@ def get_custom_elwise_kernel_and_types(context, arguments, operation,
     return kernel, parsed_args
 
 
-def get_custom_elwise_kernel(context, arguments, operation,
+def get_simple_elwise_kernel(context, arguments, operation,
                              name="elwise_kernel", options=[], **kwargs):
-    func, arguments = get_custom_elwise_kernel_and_types(
+    func, arguments = get_simple_elwise_kernel_and_types(
         context, arguments, operation,
         name=name, options=options, **kwargs)
 
     return func
 
 
-class CustomElementwiseKernel(object):
+class SimpleElementwiseKernel(object):
     """PyOpenCL's elementwise kernel without any of its magic.
 
     PyOpenCL's elementwise kernel without most of its magic except for:
@@ -769,7 +749,70 @@ class CustomElementwiseKernel(object):
         self.kwargs = kwargs
 
     def get_kernel(self):
-        pass
+        knl, arg_descrs = get_simple_elwise_kernel_and_types(
+            self.context, self.arguments, self.operation,
+            name=self.name, options=self.options,
+            **self.kwargs)
 
-    def __call__(self):
-        pass
+        for arg in arg_descrs:
+            if isinstance(arg, VectorArg) and not arg.with_offset:
+                from warnings import warn
+                warn("ElementwiseKernel '%s' used with VectorArgs that do not "
+                     "have offset support enabled. This usage is deprecated. "
+                     "Just pass with_offset=True to VectorArg, everything should "
+                     "sort itself out automatically." % self.name,
+                     DeprecationWarning)
+
+        if not [i for i, arg in enumerate(arg_descrs)
+                if isinstance(arg, VectorArg)]:
+            raise RuntimeError(
+                "ElementwiseKernel can only be used with "
+                "functions that have at least one "
+                "vector argument")
+        return knl, arg_descrs
+
+    def __call__(self, *args, **kwargs):
+        repr_vec = None
+
+        kernel, arg_descrs = self.get_kernel()
+
+        # {{{ assemble arg array
+
+        invocation_args = []
+        for arg, arg_descr in zip(args, arg_descrs):
+            if isinstance(arg_descr, VectorArg):
+                if not arg.flags.forc:
+                    raise RuntimeError("ElementwiseKernel cannot "
+                                       "deal with non-contiguous arrays")
+
+                if repr_vec is None:
+                    repr_vec = arg
+
+                invocation_args.append(arg.base_data)
+                if arg_descr.with_offset:
+                    invocation_args.append(arg.offset)
+            else:
+                invocation_args.append(arg)
+
+        # }}}
+
+        queue = kwargs.pop("queue", None)
+        wait_for = kwargs.pop("wait_for", None)
+        if kwargs:
+            raise TypeError("unknown keyword arguments: '%s'"
+                            % ", ".join(kwargs))
+
+        if queue is None:
+            queue = repr_vec.queue
+
+        max_wg_size = kernel.get_work_group_info(
+            cl.kernel_work_group_info.WORK_GROUP_SIZE,
+            queue.device)
+
+        # Last arg: n
+        invocation_args.append(repr_vec.size)
+        gs, ls = repr_vec.get_sizes(queue, max_wg_size)
+
+        kernel.set_args(*invocation_args)
+        return cl.enqueue_nd_range_kernel(queue, kernel,
+                                          gs, ls, wait_for=wait_for)
