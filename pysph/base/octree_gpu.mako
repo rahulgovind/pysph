@@ -234,19 +234,16 @@
 <%def name="copy_int_src()" cached="False">\
     dst[i] = src[i];
 </%def>
-<%def name="store_neighbor_counts_args(data_t, sorted)" cached="False">
-    int *pids_src, int *pids_dst,
-    int *unique_cids_map,
-    uint2 *pbounds_dst,
-    char *levels_src, char *levels_dst,
-    int *neighbor_cids,
-    ${data_t} *x_src, ${data_t} *y_src, ${data_t} *z_src, ${data_t} *h_src,
-    ${data_t} *x_dst, ${data_t} *y_dst, ${data_t} *z_dst, ${data_t} *h_dst,
-    int *neighbor_counts_src, int *neighbor_counts_dst,
-    ${data_t} radius_scale
-</%def>
 
-<%def name="store_neighbor_counts_src(data_t, sorted)" cached="False">
+<%def name="neighbor_query_template(data_t, sorted)" cached="False">
+/*
+    The following variables are set
+    1) pids: pid_src, pid_dst
+    2) source variable values: xs, ys, zs, r_src2;
+    3) dest variable values: only r_dst2
+    4) dist between src and dst: dist2
+    5) ...
+ */
     int pid_src, pbound_idx, pid_dst;
     % if not sorted:
         pid_src = pids_src[i];
@@ -263,7 +260,7 @@
     ${data_t} zs = z_src[pid_src];
     char ls = levels_src[i];
 
-    int large_nbr_count = 0;
+    ${caller.pre_loop()}
     for (int k = 0; k < 27; k++) {
         if (neighbor_cids[idx + k] < 0)
             break;
@@ -281,19 +278,46 @@
                                     ys - y_dst[pid_dst],
                                     zs - z_dst[pid_dst]);
 
-
-
             if (dist2 <= r_src2 && ls <= levels_dst[j]) {
-                large_nbr_count++;
                 r_dst2 = h_dst[pid_dst] * radius_scale;
                 r_dst2 *= r_dst2;
+                ${caller.src_query()}
                 if (dist2 > r_dst2 || ls < levels_dst[j]) {
-                        atom_inc(neighbor_counts_dst + pid_dst);
+                        ${caller.dst_query()}
                 }
             }
         }
     }
-    atom_add(neighbor_counts_src + pid_src, large_nbr_count);
+    ${caller.post_loop()}
+</%def>
+<%def name="store_neighbor_counts_args(data_t, sorted)" cached="False">
+    int *pids_src, int *pids_dst,
+    int *unique_cids_map,
+    uint2 *pbounds_dst,
+    char *levels_src, char *levels_dst,
+    int *neighbor_cids,
+    ${data_t} *x_src, ${data_t} *y_src, ${data_t} *z_src, ${data_t} *h_src,
+    ${data_t} *x_dst, ${data_t} *y_dst, ${data_t} *z_dst, ${data_t} *h_dst,
+    int *neighbor_counts_src, int *neighbor_counts_dst,
+    ${data_t} radius_scale
+</%def>
+
+
+<%def name="store_neighbor_counts_src(data_t, sorted)" cached="False">
+    <%self:neighbor_query_template data_t="${data_t}" sorted="${sorted}">\
+        <%def name="pre_loop()">\
+            int large_nbr_count = 0;
+        </%def>
+        <%def name="src_query()">\
+            large_nbr_count++;
+        </%def>
+        <%def name="dst_query()">\
+            atom_inc(neighbor_counts_dst + pid_dst);
+        </%def>
+        <%def name="post_loop()">\
+            atom_add(neighbor_counts_src + pid_src, large_nbr_count);
+        </%def>
+    </%self:neighbor_query_template>
 </%def>
 
 
@@ -315,65 +339,30 @@
         buffer1 = 4
     %>
 
-    int pid_src = i;
-    % if not sorted:
-        pid_src = pids_src[pid_src];
-    % endif
-
-    int idx = 27 * unique_cids_map[i];
-    int pbound_idx, pid_dst;
-    ${data_t} r_src2 = h_src[pid_src] * radius_scale;
-    r_src2 *= r_src2;
-    ${data_t} r_dst2;
-    ${data_t} xs = x_src[pid_src];
-    ${data_t} ys = y_src[pid_src];
-    ${data_t} zs = z_src[pid_src];
-    char ls = levels_src[i];
-
-    int poffset = neighbor_counts_src[pid_src];
-    int large_nbrs[${buffer1}];
-    char large_nbr_count =  0;
-
-    for (int k = 0; k < 27; k++) {
-        if (neighbor_cids[idx + k] < 0)
-            break;
-
-        pbound_idx = neighbor_cids[idx + k];
-        uint2 pbound_here = pbounds_dst[pbound_idx];
-
-        for (int j = pbound_here.s0; j < pbound_here.s1; j++) {
-            % if not sorted:
-                pid_dst = pids_dst[j];
-            % else:
-                pid_dst = j;
-            % endif
-
-            ${data_t} dist2 = NORM2(xs - x_dst[pid_dst],
-                                    ys - y_dst[pid_dst],
-                                    zs - z_dst[pid_dst]);
-
-            if (dist2 <= r_src2 && ls <= levels_dst[j]) {
-                large_nbrs[large_nbr_count++] = pid_dst;
-                if (large_nbr_count == ${buffer1}) {
-                    int m = atom_add(neighbor_counts_src + pid_src, large_nbr_count);
-                    for (int m2=0; m2 < ${buffer1}; m2++) {
-                        neighbors_src[m+m2] = large_nbrs[m2];
-                    }
-                    large_nbr_count = 0;
+    <%self:neighbor_query_template data_t="${data_t}" sorted="${sorted}">\
+        <%def name="pre_loop()">\
+            char large_nbr_count = 0;
+            int large_nbrs[${buffer1}];
+        </%def>
+        <%def name="src_query()">\
+            large_nbrs[large_nbr_count++] = pid_dst;
+            if (large_nbr_count == ${buffer1}) {
+                int m = atom_add(neighbor_counts_src + pid_src, large_nbr_count);
+                for (int m2=0; m2 < ${buffer1}; m2++) {
+                    neighbors_src[m+m2] = large_nbrs[m2];
                 }
-                r_dst2 = h_dst[pid_dst] * radius_scale;
-                r_dst2 *= r_dst2;
-                if (dist2 > r_dst2 || ls < levels_dst[j]) {
-                    neighbors_dst[atom_inc(neighbor_counts_dst + pid_dst)] = pid_src;
-                }
+                large_nbr_count = 0;
             }
-        }
-    }
+        </%def>
+        <%def name="dst_query()">\
+            neighbors_dst[atom_inc(neighbor_counts_dst + pid_dst)] = pid_src;
+        </%def>
+        <%def name="post_loop()">\
+            int m = atom_add(neighbor_counts_src + pid_src, large_nbr_count);
 
-    int m = atom_add(neighbor_counts_src + pid_src, large_nbr_count);
-
-    for (int m2=0; m2 < large_nbr_count; m2++) {
-        neighbors_src[m+m2] = large_nbrs[m2];
-    }
-
+            for (int m2=0; m2 < large_nbr_count; m2++) {
+                neighbors_src[m+m2] = large_nbrs[m2];
+            }
+        </%def>
+    </%self:neighbor_query_template>
 </%def>
