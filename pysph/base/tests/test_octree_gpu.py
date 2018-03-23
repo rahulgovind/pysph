@@ -4,7 +4,7 @@ import numpy as np
 
 pytest.importorskip("pysph.base.opencl")
 
-from pysph.base.octree_gpu import OctreeGPU
+from pysph.base.tree.octree_gpu import OctreeGPU
 
 
 class TestOctreeGPU(TestCase):

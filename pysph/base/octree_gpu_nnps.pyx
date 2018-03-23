@@ -13,7 +13,7 @@ from pyopencl.elementwise import ElementwiseKernel
 import numpy as np
 cimport numpy as np
 from pysph.base.opencl import get_context
-from pysph.base.octree_gpu import OctreeGPU
+from pysph.base.tree.octree_gpu import OctreeGPU
 
 cdef class OctreeGPUNNPS(GPUNNPS):
     def __init__(self, int dim, list particles, double radius_scale=2.0,

@@ -104,8 +104,8 @@ def reset_profile():
 
 
 def profile_kernel(kernel, name):
-    def _profile_knl(*args):
-        event = kernel(*args)
+    def _profile_knl(*args, **kwargs):
+        event = kernel(*args, **kwargs)
         profile(name, event)
         return event
 
