@@ -489,7 +489,7 @@
         </%def>
         <%def name="post_loop()">
             if(svalid)
-                neighbor_counts[pid] = neighbor_cids[24];
+                neighbor_counts[pid] = count;
         </%def>
     </%self:find_neighbors_template>
 </%def>
