@@ -13,11 +13,12 @@ from pysph.base.gpu_nnps_helper import GPUNNPSHelper
 from pysph.base.opencl import DeviceArray
 from pysph.base.opencl import get_context, get_queue, profile_with_name
 from pytools import memoize, memoize_method
+import sys
 
 from mako.template import Template
 
 octree_gpu_counter = 0
-
+disable_unicode = False if sys.version_info.major > 2 else True
 
 def get_octree_id():
     global octree_gpu_counter
@@ -471,7 +472,7 @@ class OctreeGPU(object):
             % else:
                 #define PID(idx) (pids[idx])
             % endif
-            """).render(sorted=self.sorted)
+            """, disable_unicode=disable_unicode).render(sorted=self.sorted)
 
     def tree_bottom_up(self, args, setup, leaf_operation, node_operation, output_expr):
         data_t = 'double' if self.use_double else 'float'
@@ -480,11 +481,13 @@ class OctreeGPU(object):
             NODE_KERNEL_TEMPLATE % dict(setup=setup,
                                         leaf_operation=leaf_operation,
                                         node_operation=node_operation,
-                                        output_expr=output_expr)
+                                        output_expr=output_expr),
+            disable_unicode=disable_unicode
         ).render(data_t=data_t, sorted=self.sorted)
 
         args = Template(
-            "int *offsets, uint2 *pbounds, " + args
+            "int *offsets, uint2 *pbounds, " + args,
+            disable_unicode=disable_unicode
         ).render(data_t=data_t, sorted=sorted)
 
         kernel = ElementwiseKernel(self.ctx, args, operation=operation, preamble=preamble)
@@ -552,18 +555,20 @@ class OctreeGPU(object):
 
                 return res;
             }
-        """).render(data_t=data_t)
+        """, disable_unicode=disable_unicode).render(data_t=data_t)
 
         operation = Template(
             DFS_TEMPLATE % dict(setup=setup,
                                 leaf_operation=leaf_operation,
                                 node_operation=node_operation,
                                 common_operation=common_operation,
-                                output_expr=output_expr)
+                                output_expr=output_expr),
+            disable_unicode=disable_unicode
         ).render(data_t=data_t, sorted=sorted)
 
         args = Template(
-            "int *unique_cids_idx, int *cids, int *offsets, " + args
+            "int *unique_cids_idx, int *cids, int *offsets, " + args,
+            disable_unicode=disable_unicode
         ).render(data_t=data_t, sorted=sorted)
 
         kernel = ElementwiseKernel(self.ctx, args, operation=operation, preamble=premable)
