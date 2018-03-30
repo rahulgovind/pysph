@@ -508,7 +508,9 @@
 <%def name="find_neighbors_src(data_t, sorted, wgs)" cached="False">
      <%self:find_neighbors_template data_t="${data_t}" sorted="${sorted}" wgs="${wgs}">
         <%def name="pre_loop()">
-            int offset = neighbor_counts[pid];
+            int offset;
+            if (svalid)
+                offset = neighbor_counts[pid];
         </%def>
         <%def name="query()">
             if (svalid)

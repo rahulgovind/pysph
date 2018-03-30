@@ -169,7 +169,7 @@
     uint c_y = floor((y[pid] - min.y) / cell_size);
     uint c_z = floor((z[pid] - min.z) / cell_size);
 
-    uint3 c = uint3(floor((x[pid] - min.x) / cell_size),
+    uint3 c = (uint3)(floor((x[pid] - min.x) / cell_size),
                     floor((y[pid] - min.y) / cell_size),
                     floor((z[pid] - min.z) / cell_size));
     c_x >>= (max_depth - depth_here - 1);
