@@ -220,6 +220,10 @@
 
 </%def>
 
+<%def name="reduction_template()" cached="False">\
+
+</%def>
+
 <%def name="set_node_bounds_args(data_t, sorted)" cached="False">
     uint2 *pbounds, int *offsets, int *pids,
     ${data_t} *gnode_data,
@@ -231,7 +235,7 @@
     int cidx = i;
     % for i in range(3):
         ${data_t} xmin${i} = INF;
-        ${data_t} xmax${i} = {-INF};
+        ${data_t} xmax${i} = -INF;
     % endfor
 
     ${data_t} hmax = 0;
@@ -453,9 +457,9 @@
         if (svalid) {
             for (int j=0; j < m; j++) {
                 % if sorted:
-                    pid_src= j;
+                    pid_src= pbound_here2.s0 + j;
                 % else:
-                    pid_src = pids[j];
+                    pid_src = pids[pbound_here2.s0 + j];
                 % endif
                 ${data_t} dist2 = NORM2(xs[j] - xd,
                                         ys[j] - yd,
@@ -495,6 +499,11 @@
 </%def>
 
 <%def name="find_neighbors_args(data_t, sorted, wgs)" cached="False">
+    int *unique_cid_idx, int *pids, int *cids,
+    uint2 *pbounds, int *offsets,
+    ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} *h,
+    int *neighbor_cid_offset, int *neighbor_cids,
+    int *neighbor_counts, int *neighbors
 </%def>
 <%def name="find_neighbors_src(data_t, sorted, wgs)" cached="False">
      <%self:find_neighbors_template data_t="${data_t}" sorted="${sorted}" wgs="${wgs}">
@@ -502,7 +511,8 @@
             int offset = neighbor_counts[pid];
         </%def>
         <%def name="query()">
-            neighbors[offset++] = offset_lim;
+            if (svalid)
+                neighbors[offset++] = pid_src;
         </%def>
         <%def name="post_loop()">
         </%def>
