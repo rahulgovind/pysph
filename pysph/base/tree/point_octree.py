@@ -10,7 +10,7 @@ import numpy as np
 import numpy as np
 
 from pysph.base.gpu_nnps_helper import GPUNNPSHelper
-from pysph.base.opencl import DeviceArray
+from pysph.base.opencl import DeviceArray, profile_kernel
 from pysph.base.opencl import get_context, get_queue, profile_with_name
 from pytools import memoize, memoize_method
 import sys
@@ -691,6 +691,7 @@ class OctreeGPU(object):
                     """,
             output_expr="cnt[i] = count;"
         )
+        find_neighbor_cid_counts = profile_kernel(find_neighbor_cid_counts, 'find_neighbor_cid_count')
         find_neighbor_cid_counts(self.pbounds.array,
                                  self.neighbor_cid_count.array)
 
@@ -699,6 +700,7 @@ class OctreeGPU(object):
 
         total_neighbors = int(self.neighbor_cid_count.array[-1].get())
         self.neighbor_cids = DeviceArray(np.uint32, total_neighbors)
+
 
         find_neighbor_cids = self._leaf_neighbor_operation(
             args="uint2 *pbounds, int *cnt, int *neighbor_cids",
@@ -709,7 +711,7 @@ class OctreeGPU(object):
             """,
             output_expr=""
         )
-
+        find_neighbor_cids = profile_kernel(find_neighbor_cids, 'find_neighbor_cids')
         find_neighbor_cids(self.pbounds.array,
                            self.neighbor_cid_count.array, self.neighbor_cids.array)
 
