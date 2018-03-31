@@ -30,12 +30,8 @@ def _dfs_find_leaf(octree):
         output_expr=""
     )
 
-    dfs_find_leaf(leaf_id_count.array)
+    dfs_find_leaf(octree, leaf_id_count.array)
     return leaf_id_count.array.get()
-
-
-def _dfs_find_path(octree):
-    leaf_path = octree.allocate_leaf_prop(np.int32, octree.depth)
 
 
 class OctreeTestCase(unittest.TestCase):
@@ -127,7 +123,6 @@ class OctreeTestCase(unittest.TestCase):
                 assert (nxmin[0] <= np.float32(x[j]) <= nxmax[0])
                 assert (nxmin[1] <= np.float32(y[j]) <= nxmax[1])
                 assert (nxmin[2] <= np.float32(z[j]) <= nxmax[2])
-
 
     def test_dfs_traversal(self):
         leaf_id_count = _dfs_find_leaf(self.octree)

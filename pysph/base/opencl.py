@@ -20,13 +20,13 @@ import logging
 logger = logging.getLogger()
 
 from .config import get_config
-
+import time
 from pysph.base.particle_array import ParticleArray
 
 _ctx = None
 _queue = None
 _profile_info = defaultdict(float)
-
+_cpu_profile_info = defaultdict(float)
 # args: uint* indices, dtype array, int length
 REMOVE_KNL = Template(r"""//CL//
         unsigned int idx = indices[n - 1 - i];
@@ -83,7 +83,12 @@ def profile(name, event):
     _profile_info[name] += time
 
 
-def print_profile():
+def cpu_profile(name, total_time):
+    global _cpu_profile_info
+    _cpu_profile_info[name] += total_time
+
+
+def print_profile(device_only=False):
     global _profile_info
     profile_info = sorted(_profile_info.items(), key=itemgetter(1),
                           reverse=True)
@@ -97,16 +102,34 @@ def print_profile():
         tot_time += time
     print("Total profiled time: %g secs" % tot_time)
 
+    if not device_only:
+        global _cpu_profile_info
+        profile_info = sorted(_cpu_profile_info.items(), key=itemgetter(1),
+                              reverse=True)
+        if len(profile_info) == 0:
+            print("No profile information available")
+            return
+        print("{:<30} {:<30}".format('Kernel', 'Time'))
+        tot_time = 0
+        for kernel, time in profile_info:
+            print("{:<30} {:<30}".format(kernel, time))
+            tot_time += time
+        print("Total profiled wall-clock time: %g secs" % tot_time)
+
 
 def reset_profile():
     global _profile_info
+    global _cpu_profile_info
     _profile_info = defaultdict(float)
-
+    _cpu_profile_info = defaultdict(float)
 
 def profile_kernel(kernel, name):
     def _profile_knl(*args, **kwargs):
+        start = time.time()
         event = kernel(*args, **kwargs)
         profile(name, event)
+        end = time.time()
+        cpu_profile(name, end - start)
         return event
 
     if get_config().profile:

@@ -20,6 +20,7 @@ from mako.template import Template
 octree_gpu_counter = 0
 disable_unicode = False if sys.version_info.major > 2 else True
 
+
 def get_octree_id():
     global octree_gpu_counter
     t = octree_gpu_counter
@@ -31,8 +32,8 @@ class IncompatibleOctreesException(Exception):
     pass
 
 
-def memoize(f, *args, **kwargs):
-    return f
+# def memoize(f, *args, **kwargs):
+#    return f
 
 
 LEAF_KERNEL_TEMPLATE = r"""
@@ -117,6 +118,7 @@ DFS_TEMPLATE = r"""
 @profile_with_name('particle_reordering')
 @memoize
 def _get_particle_kernel(ctx):
+    # TODO: Combine with node kernel
     return GenericScanKernel(
         ctx, cl.cltypes.uint8, neutral="0",
         arguments=r"""__global ulong *sfc,
@@ -356,7 +358,7 @@ class OctreeGPU(object):
         unique_cids_kernel(self.cids.array, self.unique_cids_map.array,
                            self.unique_cids_idx.array, uniq_count.array)
         self.unique_cid_count = uniq_count.array[0].get()
-        return temp_vars, octants, pbounds_temp, offsets_temp, num_leaves_here
+        self.clean_temp_vars(temp_vars)
 
     def create_temp_vars(self, temp_vars):
         n = self.pa.get_number_of_particles()
@@ -365,7 +367,7 @@ class OctreeGPU(object):
         temp_vars['cids'] = DeviceArray(np.uint32, n)
 
     def clean_temp_vars(self, temp_vars):
-        for k in temp_vars.keys():
+        for k in list(temp_vars.keys()):
             del temp_vars[k]
 
     def exchange_temp_vars(self, temp_vars):
@@ -424,7 +426,6 @@ class OctreeGPU(object):
         pa_gpu = self.pa.gpu
         find_neighbor_counts = self.helper.get_kernel('find_neighbor_counts', sorted=self.sorted,
                                                       wgs=wgs)
-        print('slice', slice(wgs * self.unique_cid_count))
         find_neighbor_counts(self.unique_cids_idx.array, self.pids.array,
                              self.cids.array,
                              self.pbounds.array,
@@ -466,121 +467,134 @@ class OctreeGPU(object):
         return DeviceArray(dtype, int(self.unique_cid_count))
 
     def get_preamble(self):
-        return Template("""
-            % if sorted:
-                #define PID(idx) (idx)
-            % else:
-                #define PID(idx) (pids[idx])
-            % endif
-            """, disable_unicode=disable_unicode).render(sorted=self.sorted)
+        @memoize
+        def _get_preamble(sorted):
+            return Template("""
+                % if sorted:
+                    #define PID(idx) (idx)
+                % else:
+                    #define PID(idx) (pids[idx])
+                % endif
+                """, disable_unicode=disable_unicode).render(sorted=self.sorted)
+
+        return _get_preamble(self.sorted)
 
     def tree_bottom_up(self, args, setup, leaf_operation, node_operation, output_expr):
-        data_t = 'double' if self.use_double else 'float'
-        preamble = self.get_preamble()
-        operation = Template(
-            NODE_KERNEL_TEMPLATE % dict(setup=setup,
-                                        leaf_operation=leaf_operation,
-                                        node_operation=node_operation,
-                                        output_expr=output_expr),
-            disable_unicode=disable_unicode
-        ).render(data_t=data_t, sorted=self.sorted)
+        @memoize
+        def _tree_bottom_up(use_double, sorted, args, setup,
+                            leaf_operation, node_operation, output_expr):
+            data_t = 'double' if use_double else 'float'
+            preamble = self.get_preamble()
+            operation = Template(
+                NODE_KERNEL_TEMPLATE % dict(setup=setup,
+                                            leaf_operation=leaf_operation,
+                                            node_operation=node_operation,
+                                            output_expr=output_expr),
+                disable_unicode=disable_unicode
+            ).render(data_t=data_t, sorted=sorted)
 
-        args = Template(
-            "int *offsets, uint2 *pbounds, " + args,
-            disable_unicode=disable_unicode
-        ).render(data_t=data_t, sorted=sorted)
+            args = Template(
+                "int *offsets, uint2 *pbounds, " + args,
+                disable_unicode=disable_unicode
+            ).render(data_t=data_t, sorted=sorted)
 
-        kernel = ElementwiseKernel(self.ctx, args, operation=operation, preamble=preamble)
+            kernel = ElementwiseKernel(self.ctx, args, operation=operation, preamble=preamble)
 
-        def callable(*args):
-            csum_nodes = self.total_nodes
-            out = None
-            for i in range(self.depth, -1, -1):
-                csum_nodes_next = csum_nodes
-                csum_nodes -= self.num_nodes[i]
-                out = kernel(self.offsets.array, self.pbounds.array, *args,
-                             slice=slice(csum_nodes, csum_nodes_next))
-            return out
+            def callable(octree, *args):
+                csum_nodes = octree.total_nodes
+                out = None
+                for i in range(octree.depth, -1, -1):
+                    csum_nodes_next = csum_nodes
+                    csum_nodes -= octree.num_nodes[i]
+                    out = kernel(octree.offsets.array, octree.pbounds.array, *args,
+                                 slice=slice(csum_nodes, csum_nodes_next))
+                return out
 
-        return callable
+            return callable
+
+        return _tree_bottom_up(self.use_double, self.sorted, args, setup,
+                               leaf_operation, node_operation, output_expr)
 
     def leaf_tree_traverse(self, args, setup, node_operation, leaf_operation, output_expr, common_operation=""):
-        data_t = 'double' if self.use_double else 'float'
-        premable = self.get_preamble() + Template("""
-            #define IN_BOUNDS(X, MIN, MAX) ((X >= MIN) && (X < MAX))
-            #define NORM2(X, Y, Z) ((X)*(X) + (Y)*(Y) + (Z)*(Z))
-            #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
-            #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
-            #define AVG(X, Y) (((X) + (Y)) / 2)
-            #define ABS(X) ((X) > 0 ? (X) : -(X))
-            #define EPS 1e-6
-            #define INF 1e6
-            #define SQR(X) ((X) * (X))
+        @memoize
+        def _leaf_tree_traverse(use_double, sorted, args, setup, node_operation,
+                                leaf_operation, output_expr, common_operation):
+            data_t = 'double' if use_double else 'float'
+            premable = self.get_preamble() + Template("""
+                #define IN_BOUNDS(X, MIN, MAX) ((X >= MIN) && (X < MAX))
+                #define NORM2(X, Y, Z) ((X)*(X) + (Y)*(Y) + (Z)*(Z))
+                #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
+                #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
+                #define AVG(X, Y) (((X) + (Y)) / 2)
+                #define ABS(X) ((X) > 0 ? (X) : -(X))
+                #define EPS 1e-6
+                #define INF 1e6
+                #define SQR(X) ((X) * (X))
 
-            char contains(private int *n1, private int *n2) {
-                // Check if node n1 contains node n2
-                char res = 1;
-                %for i in range(3):
-                    res = res && (n1[${i}] <= n2[${i}]) && (n1[3 + ${i}] >= n2[3 + ${i}]);
-                %endfor
+                char contains(private int *n1, private int *n2) {
+                    // Check if node n1 contains node n2
+                    char res = 1;
+                    %for i in range(3):
+                        res = res && (n1[${i}] <= n2[${i}]) && (n1[3 + ${i}] >= n2[3 + ${i}]);
+                    %endfor
 
-                return res;
-            }
+                    return res;
+                }
 
-            char contains_search(private ${data_t} *n1, private ${data_t} *n2) {
-                // Check if node n1 contains node n2 with n1 having its search radius extension
-                ${data_t} h = n1[6];
-                char res = 1;
-                %for i in range(3):
-                    res = res & (n1[${i}] - h <= n2[${i}]) & (n1[3 + ${i}] + h >= n2[3 + ${i}]);
-                %endfor
+                char contains_search(private ${data_t} *n1, private ${data_t} *n2) {
+                    // Check if node n1 contains node n2 with n1 having its search radius extension
+                    ${data_t} h = n1[6];
+                    char res = 1;
+                    %for i in range(3):
+                        res = res & (n1[${i}] - h <= n2[${i}]) & (n1[3 + ${i}] + h >= n2[3 + ${i}]);
+                    %endfor
 
-                return res;
-            }
+                    return res;
+                }
 
-            char intersects(private ${data_t} *n1, private ${data_t} *n2) {
-                // Check if node n1 'intersects' node n2
-                ${data_t} cdist;
-                ${data_t} w1, w2, wavg = 0;
-                char res = 1;
-                ${data_t} h = MAX(n1[6], n2[6]);
+                char intersects(private ${data_t} *n1, private ${data_t} *n2) {
+                    // Check if node n1 'intersects' node n2
+                    ${data_t} cdist;
+                    ${data_t} w1, w2, wavg = 0;
+                    char res = 1;
+                    ${data_t} h = MAX(n1[6], n2[6]);
 
-                % for i in range(3):
-                    cdist = fabs((n1[${i}] + n1[3 + ${i}]) / 2 - (n2[${i}] + n2[3 + ${i}]) / 2);
-                    w1 = fabs(n1[${i}] - n1[3 + ${i}]);
-                    w2 = fabs(n2[${i}] - n2[3 + ${i}]);
-                    wavg = AVG(w1, w2);
-                    res &= (cdist - wavg <= h);
-                % endfor
+                    % for i in range(3):
+                        cdist = fabs((n1[${i}] + n1[3 + ${i}]) / 2 - (n2[${i}] + n2[3 + ${i}]) / 2);
+                        w1 = fabs(n1[${i}] - n1[3 + ${i}]);
+                        w2 = fabs(n2[${i}] - n2[3 + ${i}]);
+                        wavg = AVG(w1, w2);
+                        res &= (cdist - wavg <= h);
+                    % endfor
 
-                return res;
-            }
-        """, disable_unicode=disable_unicode).render(data_t=data_t)
+                    return res;
+                }
+            """, disable_unicode=disable_unicode).render(data_t=data_t)
 
-        operation = Template(
-            DFS_TEMPLATE % dict(setup=setup,
-                                leaf_operation=leaf_operation,
-                                node_operation=node_operation,
-                                common_operation=common_operation,
-                                output_expr=output_expr),
-            disable_unicode=disable_unicode
-        ).render(data_t=data_t, sorted=sorted)
+            operation = Template(
+                DFS_TEMPLATE % dict(setup=setup,
+                                    leaf_operation=leaf_operation,
+                                    node_operation=node_operation,
+                                    common_operation=common_operation,
+                                    output_expr=output_expr),
+                disable_unicode=disable_unicode
+            ).render(data_t=data_t, sorted=sorted)
 
-        args = Template(
-            "int *unique_cids_idx, int *cids, int *offsets, " + args,
-            disable_unicode=disable_unicode
-        ).render(data_t=data_t, sorted=sorted)
+            args = Template(
+                "int *unique_cids_idx, int *cids, int *offsets, " + args,
+                disable_unicode=disable_unicode
+            ).render(data_t=data_t, sorted=sorted)
 
-        kernel = ElementwiseKernel(self.ctx, args, operation=operation, preamble=premable)
+            kernel = ElementwiseKernel(self.ctx, args, operation=operation, preamble=premable)
 
-        def callable(*args):
-            return kernel(self.unique_cids_idx.array[:self.unique_cid_count],
-                          self.cids.array, self.offsets.array, *args)
+            def callable(octree, *args):
+                return kernel(octree.unique_cids_idx.array[:octree.unique_cid_count],
+                              octree.cids.array, octree.offsets.array, *args)
 
-        return callable
+            return callable
 
-    def leafwise_groups(self):
-        pass
+        return _leaf_tree_traverse(self.use_double, self.sorted, args, setup, node_operation,
+                                   leaf_operation, output_expr, common_operation)
 
     def _set_node_bounds(self):
         # TODO: type based on use_double
@@ -624,8 +638,9 @@ class OctreeGPU(object):
                 node_hmax[node_idx] = hmax;
                 """
         )
+        set_node_bounds = profile_kernel(set_node_bounds, 'set_node_bounds')
         pa_gpu = self.pa.gpu
-        set_node_bounds(self.pids.array, pa_gpu.x, pa_gpu.y, pa_gpu.z, pa_gpu.h,
+        set_node_bounds(self, self.pids.array, pa_gpu.x, pa_gpu.y, pa_gpu.z, pa_gpu.h,
                         self.node_xmin.array, self.node_xmax.array, self.node_hmax.array)
 
     def _leaf_neighbor_operation(self, args, setup, operation, output_expr):
@@ -675,7 +690,7 @@ class OctreeGPU(object):
                                          output_expr)
 
         def callable(*args):
-            return kernel(self.node_xmin.array, self.node_xmax.array, self.node_hmax.array,
+            return kernel(self, self.node_xmin.array, self.node_xmax.array, self.node_hmax.array,
                           *args)
 
         return callable
@@ -700,7 +715,6 @@ class OctreeGPU(object):
 
         total_neighbors = int(self.neighbor_cid_count.array[-1].get())
         self.neighbor_cids = DeviceArray(np.uint32, total_neighbors)
-
 
         find_neighbor_cids = self._leaf_neighbor_operation(
             args="uint2 *pbounds, int *cnt, int *neighbor_cids",
