@@ -480,7 +480,7 @@
                 }
             }
         }
-        
+
         barrier(CLK_LOCAL_MEM_FENCE);
     }
     ${caller.post_loop()}

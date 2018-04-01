@@ -25,12 +25,12 @@ def _dfs_find_leaf(octree):
     dfs_find_leaf = octree.leaf_tree_traverse(
         "int *leaf_id_count",
         setup="leaf_id_count[i] = 0;",
-        node_operation="if (cid == curr_cid) leaf_id_count[i]++",
-        leaf_operation="if (cid == curr_cid) leaf_id_count[i]++",
+        node_operation="if (cid_dst == cid_src) leaf_id_count[i]++",
+        leaf_operation="if (cid_dst == cid_src) leaf_id_count[i]++",
         output_expr=""
     )
 
-    dfs_find_leaf(octree, leaf_id_count.array)
+    dfs_find_leaf(octree, octree, leaf_id_count.array)
     return leaf_id_count.array.get()
 
 
