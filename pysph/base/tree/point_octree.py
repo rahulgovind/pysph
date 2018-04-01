@@ -496,7 +496,7 @@ class OctreeGPU(object):
                 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
                 #define AVG(X, Y) (((X) + (Y)) / 2)
                 #define ABS(X) ((X) > 0 ? (X) : -(X))
-                #define EPS 1e-6
+                #define EPS 1e-6f
                 #define INF 1e6
                 #define SQR(X) ((X) * (X))
 
@@ -573,6 +573,7 @@ class OctreeGPU(object):
         self.node_xmax = self.allocate_node_prop(data_t3)
         self.node_hmax = self.allocate_node_prop(data_t)
 
+        # TODO: Recheck EPS 1e-6 here
         set_node_bounds = self.tree_bottom_up(
             setup=r"""
                 ${data_t} xmin[3] = {1e6, 1e6, 1e6};
@@ -587,8 +588,8 @@ class OctreeGPU(object):
                 for (int j=pbound.s0; j < pbound.s1; j++) {
                     int pid = PID(j);
                     % for d in range(3):
-                        xmin[${d}] = fmin(xmin[${d}], ${ch[d]}[pid]);
-                        xmax[${d}] = fmax(xmax[${d}], ${ch[d]}[pid]);
+                        xmin[${d}] = fmin(xmin[${d}], ${ch[d]}[pid] - 1e-6f);
+                        xmax[${d}] = fmax(xmax[${d}], ${ch[d]}[pid] + 1e-6f);
                     % endfor
                     hmax = fmax(h[pid] * radius_scale, hmax);
                 }
