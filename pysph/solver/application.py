@@ -680,6 +680,14 @@ class Application(object):
             help=("Disable multiprocessing interface "
                   "to the solver"))
 
+        interfaces.add_argument(
+            "--octree-leaf-size",
+            dest="octree_leaf_size",
+            default=64,
+            help=("Specify leaf size of octree. "
+                  "Must be multiples of 32")
+        )
+
         # Scheme options.
         if self.scheme is not None:
             scheme_options = parser.add_argument_group(
@@ -854,6 +862,9 @@ class Application(object):
             # create the NNPS object
             if options.with_opencl:
                 if options.nnps == 'gpu_octree':
+                    # TODO: Messages for invalid leaf size
+                    leaf_size = int(options.octree_leaf_size)
+                    assert(leaf_size % 32 == 0)
                     from pysph.base.octree_gpu_nnps2 import OctreeGPUNNPS2
                     nnps = OctreeGPUNNPS2(
                         dim=solver.dim,
@@ -863,7 +874,7 @@ class Application(object):
                         cache=True,
                         sort_gids=options.sort_gids,
                         allow_sort=True,
-                        leaf_size=64
+                        leaf_size=leaf_size
                     )
                 else:
                     from pysph.base.gpu_nnps import ZOrderGPUNNPS
