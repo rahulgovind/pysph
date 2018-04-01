@@ -197,7 +197,7 @@ def _get_unique_cids_kernel(ctx):
 
 class OctreeGPU(object):
     def __init__(self, pa, radius_scale=1.0,
-                 use_double=False):
+                 use_double=False, leaf_size=32):
         self.pa = pa
 
         self.radius_scale = radius_scale
@@ -222,7 +222,7 @@ class OctreeGPU(object):
 
         self.preamble = norm2
         self.depth = 0
-        self.leaf_size = 32
+        self.leaf_size = leaf_size
 
     def refresh(self, xmin, xmax, hmin):
         self.xmin = xmin
