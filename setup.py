@@ -507,19 +507,6 @@ def get_basic_extensions():
                 define_macros=MACROS,
             ),
             Extension(
-                name="pysph.base.tree.point_octree",
-                sources=["pysph/base/tree/point_octree.py"],
-                depends=get_deps(
-                    "pysph/base/nnps_base"
-                ),
-                include_dirs=include_dirs,
-                extra_compile_args=extra_compile_args + openmp_compile_args,
-                extra_link_args=openmp_link_args,
-                cython_compile_time_env={'OPENMP': openmp_env},
-                language="c++",
-                define_macros=MACROS,
-            ),
-            Extension(
                 name="pysph.base.octree_gpu_nnps",
                 sources=["pysph/base/octree_gpu_nnps.pyx"],
                 depends=get_deps(
@@ -531,7 +518,21 @@ def get_basic_extensions():
                 cython_compile_time_env={'OPENMP': openmp_env},
                 language="c++",
                 define_macros=MACROS,
-            ))
+            ),
+            Extension(
+                name="pysph.base.octree_gpu_nnps2",
+                sources=["pysph/base/octree_gpu_nnps2.pyx"],
+                depends=get_deps(
+                    "pysph/base/nnps_base"
+                ),
+                include_dirs=include_dirs,
+                extra_compile_args=extra_compile_args + openmp_compile_args,
+                extra_link_args=openmp_link_args,
+                cython_compile_time_env={'OPENMP': openmp_env},
+                language="c++",
+                define_macros=MACROS,
+            )
+            )
         )
 
 

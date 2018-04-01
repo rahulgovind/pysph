@@ -32,8 +32,8 @@ class IncompatibleOctreesException(Exception):
     pass
 
 
-# def memoize(f, *args, **kwargs):
-#    return f
+def memoize(f, *args, **kwargs):
+    return f
 
 
 LEAF_KERNEL_TEMPLATE = r"""
@@ -59,7 +59,12 @@ if (child_offset == -1) {
 """
 
 DFS_TEMPLATE = r"""
-   int cid = cids[unique_cids_idx[i]];
+    /*
+     * Owner of properties -
+     * dst octree: cids, unique_cids_idx
+     * src octree: offsets
+     */
+   int cid_dst = cids[unique_cids_idx[i]];
 
     /*
      * Assuming max depth of 16
@@ -74,26 +79,26 @@ DFS_TEMPLATE = r"""
     child_stack[0] = 0;
     cid_stack[0] = 1;
     char flag;
-    int curr_cid;
+    int cid_src;
     int child_offset;
 
     %(setup)s;
     while (idx >= 0) {
 
         // Recurse to find either leaf node or invalid node
-        curr_cid = cid_stack[idx];
+        cid_src = cid_stack[idx];
 
-        child_offset = offsets[curr_cid];
+        child_offset = offsets[cid_src];
         %(common_operation)s;
 
         while (child_offset != -1) {
             %(node_operation)s;
 
             idx++;
-            curr_cid = child_offset;
-            cid_stack[idx] = curr_cid;
+            cid_src = child_offset;
+            cid_stack[idx] = cid_src;
             child_stack[idx] = 0;
-            child_offset = offsets[curr_cid];
+            child_offset = offsets[cid_src];
         }
 
         if (child_offset == -1) {
@@ -247,6 +252,7 @@ class OctreeGPU(object):
         self.max_depth = int(np.ceil(np.log2(max_width / self.cell_size))) + 1
 
     def _initialize_data(self):
+        self.sorted = False
         num_particles = self.pa.get_number_of_particles()
         self.pids = DeviceArray(np.uint32, n=num_particles)
         self.pid_keys = DeviceArray(np.uint64, n=num_particles)
@@ -259,6 +265,7 @@ class OctreeGPU(object):
         self.offsets = None
 
     def _reinitialize_data(self):
+        self.sorted = False
         num_particles = self.pa.get_number_of_particles()
         self.pids.resize(num_particles)
         self.pid_keys.resize(num_particles)
@@ -419,47 +426,6 @@ class OctreeGPU(object):
             )
             curr_offset += self.num_nodes[i]
 
-    def _find_neighbors(self, store=True):
-        n = self.pa.get_number_of_particles()
-        self.neighbor_count = DeviceArray(np.uint32, n + 1)
-        wgs = self.leaf_size
-        pa_gpu = self.pa.gpu
-        find_neighbor_counts = self.helper.get_kernel('find_neighbor_counts', sorted=self.sorted,
-                                                      wgs=wgs)
-        find_neighbor_counts(self.unique_cids_idx.array, self.pids.array,
-                             self.cids.array,
-                             self.pbounds.array,
-                             self.offsets.array,
-                             pa_gpu.x, pa_gpu.y, pa_gpu.z, pa_gpu.h,
-                             self.neighbor_cid_count.array,
-                             self.neighbor_cids.array,
-                             self.neighbor_count.array,
-                             range=slice(wgs * self.unique_cid_count),
-                             fixed_work_items=wgs)
-
-        if not store:
-            return
-
-        neighbor_psum = _get_neighbor_psum_kernel(self.ctx)
-        neighbor_psum(self.neighbor_count.array)
-
-        total_neighbors = self.neighbor_count.array[-1].get()
-        self.neighbors = DeviceArray(np.uint32, int(total_neighbors))
-
-        find_neighbors = self.helper.get_kernel('find_neighbors', sorted=self.sorted,
-                                                wgs=wgs)
-        find_neighbors(self.unique_cids_idx.array, self.pids.array,
-                       self.cids.array,
-                       self.pbounds.array,
-                       self.offsets.array,
-                       pa_gpu.x, pa_gpu.y, pa_gpu.z, pa_gpu.h,
-                       self.neighbor_cid_count.array,
-                       self.neighbor_cids.array,
-                       self.neighbor_count.array,
-                       self.neighbors.array,
-                       range=slice(wgs * self.unique_cid_count),
-                       fixed_work_items=wgs)
-
     def allocate_node_prop(self, dtype):
         return DeviceArray(dtype, self.total_nodes)
 
@@ -516,6 +482,10 @@ class OctreeGPU(object):
                                leaf_operation, node_operation, output_expr)
 
     def leaf_tree_traverse(self, args, setup, node_operation, leaf_operation, output_expr, common_operation=""):
+        """
+        Traverse this (source) octree. One thread for each leaf of destination octree.
+        """
+
         @memoize
         def _leaf_tree_traverse(use_double, sorted, args, setup, node_operation,
                                 leaf_operation, output_expr, common_operation):
@@ -587,9 +557,9 @@ class OctreeGPU(object):
 
             kernel = ElementwiseKernel(self.ctx, args, operation=operation, preamble=premable)
 
-            def callable(octree, *args):
-                return kernel(octree.unique_cids_idx.array[:octree.unique_cid_count],
-                              octree.cids.array, octree.offsets.array, *args)
+            def callable(octree_src, octree_dst, *args):
+                return kernel(octree_dst.unique_cids_idx.array[:octree_dst.unique_cid_count],
+                              octree_dst.cids.array, octree_src.offsets.array, *args)
 
             return callable
 
@@ -597,10 +567,12 @@ class OctreeGPU(object):
                                    leaf_operation, output_expr, common_operation)
 
     def _set_node_bounds(self):
-        # TODO: type based on use_double
-        self.node_xmin = self.allocate_node_prop(cl.cltypes.float3)
-        self.node_xmax = self.allocate_node_prop(cl.cltypes.float3)
-        self.node_hmax = self.allocate_node_prop(cl.cltypes.float)
+        data_t3 = cl.cltypes.double3 if self.use_double else cl.cltypes.float3
+        data_t = cl.cltypes.double if self.use_double else cl.cltypes.float
+
+        self.node_xmin = self.allocate_node_prop(data_t3)
+        self.node_xmax = self.allocate_node_prop(data_t3)
+        self.node_hmax = self.allocate_node_prop(data_t)
 
         set_node_bounds = self.tree_bottom_up(
             setup=r"""
@@ -609,7 +581,8 @@ class OctreeGPU(object):
                 ${data_t} hmax = 0;
                 """,
             args="""int *pids, ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} *h,
-                     float3 *node_xmin, float3 *node_xmax, float *node_hmax""",
+                    ${data_t} radius_scale,
+                     ${data_t}3 *node_xmin, ${data_t}3 *node_xmax, ${data_t} *node_hmax""",
             leaf_operation="""
                 <% ch = ['x', 'y', 'z'] %>
                 for (int j=pbound.s0; j < pbound.s1; j++) {
@@ -618,7 +591,7 @@ class OctreeGPU(object):
                         xmin[${d}] = fmin(xmin[${d}], ${ch[d]}[pid]);
                         xmax[${d}] = fmax(xmax[${d}], ${ch[d]}[pid]);
                     % endfor
-                    hmax = fmax(h[pid], hmax);
+                    hmax = fmax(h[pid] * radius_scale, hmax);
                 }
                 """,
             node_operation="""
@@ -640,29 +613,34 @@ class OctreeGPU(object):
         )
         set_node_bounds = profile_kernel(set_node_bounds, 'set_node_bounds')
         pa_gpu = self.pa.gpu
+        dtype = np.float64 if self.use_double else np.float32
         set_node_bounds(self, self.pids.array, pa_gpu.x, pa_gpu.y, pa_gpu.z, pa_gpu.h,
+                        dtype(self.radius_scale),
                         self.node_xmin.array, self.node_xmax.array, self.node_hmax.array)
 
-    def _leaf_neighbor_operation(self, args, setup, operation, output_expr):
+    def _leaf_neighbor_operation(self, octree_src, args, setup, operation, output_expr):
+        """
+        Template for finding neighboring cids of a cell.
+        """
         setup = """
         ${data_t} ndst[8];
         ${data_t} nsrc[8];
 
         %% for i in range(3):
-            ndst[${i}] = node_xmin[cid].s${i};
-            ndst[${i} + 3] = node_xmax[cid].s${i};
+            ndst[${i}] = node_xmin_dst[cid_dst].s${i};
+            ndst[${i} + 3] = node_xmax_dst[cid_dst].s${i};
         %% endfor
-        ndst[6] = node_hmax[cid];
+        ndst[6] = node_hmax_dst[cid_dst];
 
         %(setup)s;
         """ % dict(setup=setup)
 
         node_operation = """
         % for i in range(3):
-            nsrc[${i}] = node_xmin[curr_cid].s${i};
-            nsrc[${i} + 3] = node_xmax[curr_cid].s${i};
+            nsrc[${i}] = node_xmin_src[cid_src].s${i};
+            nsrc[${i} + 3] = node_xmax_src[cid_src].s${i};
         % endfor
-        nsrc[6] = node_hmax[curr_cid];
+        nsrc[6] = node_hmax_src[cid_src];
 
         if (!intersects(ndst, nsrc) && !contains(nsrc, ndst)) {
             flag = 0;
@@ -672,10 +650,10 @@ class OctreeGPU(object):
 
         leaf_operation = """
         %% for i in range(3):
-            nsrc[${i}] = node_xmin[curr_cid].s${i};
-            nsrc[${i} + 3] = node_xmax[curr_cid].s${i};
+            nsrc[${i}] = node_xmin_src[cid_src].s${i};
+            nsrc[${i} + 3] = node_xmax_src[cid_src].s${i};
         %% endfor
-        nsrc[6] = node_hmax[curr_cid];
+        nsrc[6] = node_hmax_src[cid_src];
 
         if (intersects(ndst, nsrc) || contains_search(ndst, nsrc)) {
             %(operation)s;
@@ -683,52 +661,113 @@ class OctreeGPU(object):
         """ % dict(operation=operation)
 
         output_expr = output_expr
-        args = "${data_t}3 *node_xmin, ${data_t}3 *node_xmax, ${data_t} *node_hmax, " + args
+        args = """
+        ${data_t}3 *node_xmin_src, ${data_t}3 *node_xmax_src, ${data_t} *node_hmax_src,
+        ${data_t}3 *node_xmin_dst, ${data_t}3 *node_xmax_dst, ${data_t} *node_hmax_dst,
+        """ + args
 
-        kernel = self.leaf_tree_traverse(args, setup,
-                                         node_operation, leaf_operation,
-                                         output_expr)
+        kernel = octree_src.leaf_tree_traverse(args, setup,
+                                               node_operation, leaf_operation,
+                                               output_expr)
 
         def callable(*args):
-            return kernel(self, self.node_xmin.array, self.node_xmax.array, self.node_hmax.array,
+            return kernel(octree_src, self,
+                          octree_src.node_xmin.array, octree_src.node_xmax.array,
+                          octree_src.node_hmax.array,
+                          self.node_xmin.array, self.node_xmax.array, self.node_hmax.array,
                           *args)
 
         return callable
 
-    def _find_neighbor_cids(self):
-        self.neighbor_cid_count = DeviceArray(np.uint32, self.unique_cid_count + 1)
+    def _find_neighbor_cids(self, octree_src):
+        neighbor_cid_count = DeviceArray(np.uint32, self.unique_cid_count + 1)
+        # pbounds of src
         find_neighbor_cid_counts = self._leaf_neighbor_operation(
+            octree_src,
             args="uint2 *pbounds, int *cnt",
             setup="int count=0",
             operation="""
-                    if (pbounds[curr_cid].s0 < pbounds[curr_cid].s1)
+                    if (pbounds[cid_src].s0 < pbounds[cid_src].s1)
                         count++;
                     """,
             output_expr="cnt[i] = count;"
         )
         find_neighbor_cid_counts = profile_kernel(find_neighbor_cid_counts, 'find_neighbor_cid_count')
-        find_neighbor_cid_counts(self.pbounds.array,
-                                 self.neighbor_cid_count.array)
+        find_neighbor_cid_counts(octree_src.pbounds.array,
+                                 neighbor_cid_count.array)
 
         neighbor_psum = _get_neighbor_psum_kernel(self.ctx)
-        neighbor_psum(self.neighbor_cid_count.array)
+        neighbor_psum(neighbor_cid_count.array)
 
-        total_neighbors = int(self.neighbor_cid_count.array[-1].get())
-        self.neighbor_cids = DeviceArray(np.uint32, total_neighbors)
+        total_neighbors = int(neighbor_cid_count.array[-1].get())
+        neighbor_cids = DeviceArray(np.uint32, total_neighbors)
 
+        # pbounds of src
         find_neighbor_cids = self._leaf_neighbor_operation(
+            octree_src,
             args="uint2 *pbounds, int *cnt, int *neighbor_cids",
             setup="int offset=cnt[i];",
             operation="""
-            if (pbounds[curr_cid].s0 < pbounds[curr_cid].s1)
-                neighbor_cids[offset++] = curr_cid;
+            if (pbounds[cid_src].s0 < pbounds[cid_src].s1)
+                neighbor_cids[offset++] = cid_src;
             """,
             output_expr=""
         )
         find_neighbor_cids = profile_kernel(find_neighbor_cids, 'find_neighbor_cids')
-        find_neighbor_cids(self.pbounds.array,
-                           self.neighbor_cid_count.array, self.neighbor_cids.array)
+        find_neighbor_cids(octree_src.pbounds.array,
+                           neighbor_cid_count.array, neighbor_cids.array)
+        return neighbor_cid_count, neighbor_cids
+
+    def _find_neighbor_lengths(self, neighbor_cid_count, neighbor_cids, octree_src,
+                               neighbor_count):
+        n = self.pa.get_number_of_particles()
+        wgs = self.leaf_size
+        pa_gpu_dst = self.pa.gpu
+        pa_gpu_src = octree_src.pa.gpu
+        dtype = np.float64 if self.use_double else np.float32
+
+        find_neighbor_counts = self.helper.get_kernel('find_neighbor_counts', sorted=self.sorted,
+                                                      wgs=wgs)
+        find_neighbor_counts(self.unique_cids_idx.array, octree_src.pids.array, self.pids.array,
+                             self.cids.array,
+                             octree_src.pbounds.array, self.pbounds.array,
+                             pa_gpu_src.x, pa_gpu_src.y, pa_gpu_src.z, pa_gpu_src.h,
+                             pa_gpu_dst.x, pa_gpu_dst.y, pa_gpu_dst.z, pa_gpu_dst.h,
+                             dtype(self.radius_scale),
+                             neighbor_cid_count.array,
+                             neighbor_cids.array,
+                             neighbor_count,
+                             range=slice(wgs * self.unique_cid_count),
+                             fixed_work_items=wgs)
+
+    def _find_neighbors(self, neighbor_cid_count, neighbor_cids, octree_src,
+                        start_indices, neighbors):
+        # TODO: Extra checking needed to ensure octrees compatible
+        assert(octree_src.sorted == self.sorted)
+        assert(octree_src.leaf_size == self.leaf_size)
+
+        n = self.pa.get_number_of_particles()
+        wgs = self.leaf_size
+        pa_gpu_dst = self.pa.gpu
+        pa_gpu_src = octree_src.pa.gpu
+        dtype = np.float64 if self.use_double else np.float32
+
+        find_neighbors = self.helper.get_kernel('find_neighbors', sorted=self.sorted,
+                                                wgs=wgs)
+        find_neighbors(self.unique_cids_idx.array, octree_src.pids.array, self.pids.array,
+                       self.cids.array,
+                       octree_src.pbounds.array, self.pbounds.array,
+                       pa_gpu_src.x, pa_gpu_src.y, pa_gpu_src.z, pa_gpu_src.h,
+                       pa_gpu_dst.x, pa_gpu_dst.y, pa_gpu_dst.z, pa_gpu_dst.h,
+                       dtype(self.radius_scale),
+                       neighbor_cid_count.array,
+                       neighbor_cids.array,
+                       start_indices,
+                       neighbors,
+                       range=slice(wgs * self.unique_cid_count),
+                       fixed_work_items=wgs)
 
     def _sort(self):
+        # Particle array needs to be aligned by caller
         if not self.sorted:
-            self.sorted = True
+            self.sorted = 1

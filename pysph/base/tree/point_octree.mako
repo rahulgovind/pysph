@@ -396,27 +396,35 @@
 </%def>
 
 <%def name="find_neighbors_template(data_t, sorted, wgs)" cached="False">
+    /*
+     * Property owners
+     * octree_dst: cids, unique_cid_idx
+     * octree_src: neighbor_cid_offset, neighbor_cids
+     * self evident: xsrc, ysrc, zsrc, hsrc,
+                     xdst, ydst, zdst, hdst,
+                     pbounds_src, pbounds_dst,
+     */
     int idx = i / ${wgs};
 
-    // Fetch src particles
+    // Fetch dst particles
     ${data_t} xd, yd, zd, hd;
 
     int cid_dst = cids[unique_cid_idx[idx]];
-    uint2 pbound_here = pbounds[cid_dst];
+    uint2 pbound_here = pbounds_dst[cid_dst];
     char svalid = (pbound_here.s0 + lid < pbound_here.s1);
-    int pid;
+    int pid_dst;
 
     if (svalid) {
         % if sorted:
-            pid = pbound_here.s0 + lid;
+            pid_dst = pbound_here.s0 + lid;
         % else:
-            pid = pids[pbound_here.s0 + lid];
+            pid_dst = pids_dst[pbound_here.s0 + lid];
         % endif
 
-        xd = x[pid];
-        yd = y[pid];
-        zd = z[pid];
-        hd = h[pid];
+        xd = xdst[pid_dst];
+        yd = ydst[pid_dst];
+        zd = zdst[pid_dst];
+        hd = hdst[pid_dst];
     }
 
     // Set loop parameters
@@ -435,7 +443,7 @@
     ${caller.pre_loop()}
     while (offset_src < offset_lim) {
         cid_src = neighbor_cids[offset_src];
-        pbound_here2 = pbounds[cid_src];
+        pbound_here2 = pbounds_src[cid_src];
         offset_src++;
 
         // Copy src data
@@ -443,12 +451,12 @@
             %if sorted:
                 pid_src = pbound_here2.s0 + lid;
             % else:
-                pid_src = pids[pbound_here2.s0 + lid];
+                pid_src = pids_src[pbound_here2.s0 + lid];
             %endif
-            xs[lid] = x[pid_src];
-            ys[lid] = y[pid_src];
-            zs[lid] = z[pid_src];
-            hs[lid] = h[pid_src];
+            xs[lid] = xsrc[pid_src];
+            ys[lid] = ysrc[pid_src];
+            zs[lid] = zsrc[pid_src];
+            hs[lid] = hsrc[pid_src];
         }
         m = pbound_here2.s1 - pbound_here2.s0;
 
@@ -459,13 +467,13 @@
                 % if sorted:
                     pid_src= pbound_here2.s0 + j;
                 % else:
-                    pid_src = pids[pbound_here2.s0 + j];
+                    pid_src = pids_src[pbound_here2.s0 + j];
                 % endif
                 ${data_t} dist2 = NORM2(xs[j] - xd,
                                         ys[j] - yd,
                                         zs[j] - zd);
 
-                r2 = MAX(hs[j], hd);
+                r2 = MAX(hs[j], hd) * radius_scale;
                 r2 *= r2;
                 if (dist2 < r2) {
                     ${caller.query()}
@@ -477,9 +485,11 @@
 </%def>
 
 <%def name="find_neighbor_counts_args(data_t, sorted, wgs)" cached="False">
-    int *unique_cid_idx, int *pids, int *cids,
-    uint2 *pbounds, int *offsets,
-    ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} *h,
+    int *unique_cid_idx, int *pids_src, int *pids_dst, int *cids,
+    uint2 *pbounds_src, uint2 *pbounds_dst,
+    ${data_t} *xsrc, ${data_t} *ysrc, ${data_t} *zsrc, ${data_t} *hsrc,
+    ${data_t} *xdst, ${data_t} *ydst, ${data_t} *zdst, ${data_t} *hdst,
+    ${data_t} radius_scale,
     int *neighbor_cid_offset, int *neighbor_cids,
     int *neighbor_counts
 </%def>
@@ -493,15 +503,17 @@
         </%def>
         <%def name="post_loop()">
             if(svalid)
-                neighbor_counts[pid] = count;
+                neighbor_counts[pid_dst] = count;
         </%def>
     </%self:find_neighbors_template>
 </%def>
 
 <%def name="find_neighbors_args(data_t, sorted, wgs)" cached="False">
-    int *unique_cid_idx, int *pids, int *cids,
-    uint2 *pbounds, int *offsets,
-    ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} *h,
+    int *unique_cid_idx, int *pids_src, int *pids_dst, int *cids,
+    uint2 *pbounds_src, uint2 *pbounds_dst,
+    ${data_t} *xsrc, ${data_t} *ysrc, ${data_t} *zsrc, ${data_t} *hsrc,
+    ${data_t} *xdst, ${data_t} *ydst, ${data_t} *zdst, ${data_t} *hdst,
+    ${data_t} radius_scale,
     int *neighbor_cid_offset, int *neighbor_cids,
     int *neighbor_counts, int *neighbors
 </%def>
@@ -510,7 +522,7 @@
         <%def name="pre_loop()">
             int offset;
             if (svalid)
-                offset = neighbor_counts[pid];
+                offset = neighbor_counts[pid_dst];
         </%def>
         <%def name="query()">
             if (svalid)

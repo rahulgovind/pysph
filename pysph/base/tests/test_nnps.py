@@ -157,12 +157,18 @@ class NNPSTestCase(unittest.TestCase):
         """
         self.numPoints1 = numPoints1 = 1 << 10
         self.numPoints2 = numPoints2 = 1 << 11
+        self.numPoints3 = numPoints3 = 1 << 10
+        m4 = 8
+        self.numPoints4 = numPoints4 = m4 ** 3
 
         self.pa1 = pa1 = self._create_random(numPoints1)
         self.pa2 = pa2 = self._create_random(numPoints2)
+        self.pa3 = pa3 = self._create_random_variable_h(numPoints3)
+        self.pa4 = pa4 = self._create_linear_radius(0.1, 0.4, m4)
+
 
         # the list of particles
-        self.particles = [pa1, pa2]
+        self.particles = [pa1, pa2, pa3, pa4]
 
     def _create_random(self, numPoints):
         # average particle spacing and volume in the unit cube
@@ -172,6 +178,39 @@ class NNPSTestCase(unittest.TestCase):
         x1, y1, z1 = random.random((3, numPoints)) * 2.0 - 1.0
         h1 = numpy.ones_like(x1) * 1.2 * dx
         gid1 = numpy.arange(numPoints).astype(numpy.uint32)
+
+        # first particle array
+        pa = get_particle_array(
+            x=x1, y=y1, z=z1, h=h1, gid=gid1)
+
+        return pa
+
+    def _create_linear_radius(self, dx_min, dx_max, m):
+        n = m ** 3
+        base = numpy.linspace(1., (dx_max / dx_min), m)
+        hl = base * dx_min
+        xl = numpy.cumsum(hl)
+        x, y, z = numpy.meshgrid(xl, xl, xl)
+        x, y, z = x.ravel(), y.ravel(), z.ravel()
+        h1, h2, h3 = numpy.meshgrid(hl, hl, hl)
+        h = (h1 ** 2 + h2 ** 2 + h3 ** 2) ** 0.5
+        h = h.ravel()
+        gid = numpy.arange(n).astype(numpy.uint32)
+
+        pa = get_particle_array(
+            x=x, y=y, z=z, h=h, gid=gid
+        )
+
+        return pa
+
+    def _create_random_variable_h(self, num_points):
+        # average particle spacing and volume in the unit cube
+        dx = pow(1.0 / num_points, 1. / 3.)
+
+        # create random points in the interval [-1, 1]^3
+        x1, y1, z1 = random.random((3, num_points)) * 2.0 - 1.0
+        h1 = numpy.ones_like(x1) * numpy.random.uniform(1, 4, size=num_points) * 1.2 * dx
+        gid1 = numpy.arange(num_points).astype(numpy.uint32)
 
         # first particle array
         pa = get_particle_array(
@@ -240,11 +279,28 @@ class DictBoxSortNNPSTestCase(NNPSTestCase):
         self._test_neighbors_by_particle(src_index=1, dst_index=1,
                                          dst_numPoints=self.numPoints2)
 
+    def test_neighbors_cc(self):
+        self._test_neighbors_by_particle(src_index=2, dst_index=2,
+                                         dst_numPoints=self.numPoints3)
+
+    def test_neighbors_dd(self):
+        self._test_neighbors_by_particle(src_index=3, dst_index=3,
+                                         dst_numPoints=self.numPoints4)
+
+    def test_uniform_and_variable(self):
+        pass
+
     def test_repeated(self):
         self.test_neighbors_aa()
         self.test_neighbors_ab()
         self.test_neighbors_ba()
         self.test_neighbors_bb()
+        self.test_neighbors_cc()
+        self.test_neighbors_dd()
+
+    def test_variable_h(self):
+        self.test_neighbors_cc()
+        self.test_neighbors_dd()
 
 
 class BoxSortNNPSTestCase(DictBoxSortNNPSTestCase):
@@ -393,6 +449,28 @@ class OctreeGPUNNPSTestCase(DictBoxSortNNPSTestCase):
         get_config().use_double = self._orig_use_double
 
 
+class OctreeGPUNNPS2TestCase(DictBoxSortNNPSTestCase):
+    """Test for Z-Order SFC based OpenCL algorithm"""
+
+    def setUp(self):
+        NNPSTestCase.setUp(self)
+        cl = importorskip("pyopencl")
+        from pysph.base import gpu_nnps
+        ctx = cl.create_some_context(interactive=False)
+        cfg = get_config()
+        self._orig_use_double = cfg.use_double
+        cfg.use_double = False
+
+        self.nps = gpu_nnps.OctreeGPUNNPS2(
+            dim=3, particles=self.particles, radius_scale=2.0,
+            ctx=ctx
+        )
+
+    def tearDown(self):
+        super(OctreeGPUNNPS2TestCase, self).tearDown()
+        get_config().use_double = self._orig_use_double
+
+
 class BruteForceNNPSTestCase(DictBoxSortNNPSTestCase):
     """Test for OpenCL brute force algorithm"""
 
@@ -457,6 +535,27 @@ class OctreeGPUDoubleNNPSTestCase(DictBoxSortNNPSTestCase):
         get_config().use_double = self._orig_use_double
 
 
+class OctreeGPU2DoubleNNPSTestCase(DictBoxSortNNPSTestCase):
+    """Test for Octree based OpenCL algorithm"""
+
+    def setUp(self):
+        NNPSTestCase.setUp(self)
+        cl = importorskip("pyopencl")
+        from pysph.base import gpu_nnps
+        ctx = cl.create_some_context(interactive=False)
+        cfg = get_config()
+        self._orig_use_double = cfg.use_double
+        cfg.use_double = True
+        self.nps = gpu_nnps.OctreeGPUNNPS2(
+            dim=3, particles=self.particles, radius_scale=2.0,
+            ctx=ctx
+        )
+
+    def tearDown(self):
+        super(OctreeGPU2DoubleNNPSTestCase, self).tearDown()
+        get_config().use_double = self._orig_use_double
+
+
 class TestZOrderGPUNNPSWithSorting(DictBoxSortNNPSTestCase):
     def setUp(self):
         NNPSTestCase.setUp(self)
@@ -502,6 +601,30 @@ class OctreeGPUNNPSWithSortingTestCase(DictBoxSortNNPSTestCase):
 
     def tearDown(self):
         super(OctreeGPUNNPSWithSortingTestCase, self).tearDown()
+        get_config().use_double = self._orig_use_double
+
+
+class OctreeGPUNNPS2WithSortingTestCase(DictBoxSortNNPSTestCase):
+    def setUp(self):
+        NNPSTestCase.setUp(self)
+        cl = importorskip("pyopencl")
+        from pysph.base import gpu_nnps
+        ctx = cl.create_some_context(interactive=False)
+        cfg = get_config()
+        self._orig_use_double = cfg.use_double
+        cfg.use_double = False
+        self.nps = gpu_nnps.OctreeGPUNNPS2(
+            dim=3, particles=self.particles, radius_scale=2.0,
+            ctx=ctx
+        )
+        self.nps.spatially_order_particles(0)
+        self.nps.spatially_order_particles(1)
+
+        for pa in self.particles:
+            pa.gpu.pull()
+
+    def tearDown(self):
+        super(OctreeGPUNNPS2WithSortingTestCase, self).tearDown()
         get_config().use_double = self._orig_use_double
 
 

@@ -54,9 +54,6 @@ cdef class OctreeGPUNNPS(GPUNNPS):
         def update():
             self.octrees[pa_index]._sort()
 
-        cdef NNPSParticleArrayWrapper pa_wrapper = self.pa_wrappers[pa_index]
-        num_particles = pa_wrapper.get_number_of_particles()
-
         return self.octrees[pa_index].pids.array, update
 
     cpdef set_context(self, int src_index, int dst_index):

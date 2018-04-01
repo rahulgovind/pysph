@@ -2,4 +2,5 @@ from pysph.base.gpu_nnps_base import GPUNeighborCache, GPUNNPS, BruteForceNNPS
 from pysph.base.z_order_gpu_nnps import ZOrderGPUNNPS
 from pysph.base.stratified_sfc_gpu_nnps import StratifiedSFCGPUNNPS
 from pysph.base.octree_gpu_nnps import OctreeGPUNNPS
+from pysph.base.octree_gpu_nnps2 import OctreeGPUNNPS2
 from pysph.base.gpu_domain_manager import GPUDomainManager
