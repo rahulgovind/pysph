@@ -314,7 +314,7 @@ class OctreeGPU(object):
         temp_vars = {}
         csum_nodes_prev = 0
         csum_nodes = 1
-
+        self.depth = 0
         self.num_nodes = [1]
 
         # Initialize temporary data (but persistent across layers)
@@ -417,7 +417,6 @@ class OctreeGPU(object):
         append_layer = self.helper.get_kernel('append_layer')
 
         self.total_nodes = total_nodes
-
         for i in range(self.depth + 1):
             append_layer(
                 offsets_temp[i].array, pbounds_temp[i].array,

@@ -460,7 +460,7 @@ class Application(object):
             dest="nnps",
             choices=[
                 'box', 'll', 'sh', 'esh', 'ci', 'sfc', 'comp_tree',
-                'strat_hash', 'strat_sfc', 'tree'
+                'strat_hash', 'strat_sfc', 'tree', 'gpu_octree'
             ],
             default='ll',
             help="Use one of box-sort ('box') or "
@@ -853,14 +853,27 @@ class Application(object):
             cache = options.cache_nnps
             # create the NNPS object
             if options.with_opencl:
-                from pysph.base.gpu_nnps import ZOrderGPUNNPS
-                nnps = ZOrderGPUNNPS(
-                    dim=solver.dim,
-                    particles=self.particles,
-                    radius_scale=kernel.radius_scale,
-                    domain=self.domain,
-                    cache=True,
-                    sort_gids=options.sort_gids)
+                if options.nnps == 'gpu_octree':
+                    from pysph.base.octree_gpu_nnps2 import OctreeGPUNNPS2
+                    nnps = OctreeGPUNNPS2(
+                        dim=solver.dim,
+                        particles=self.particles,
+                        radius_scale=kernel.radius_scale,
+                        domain=self.domain,
+                        cache=True,
+                        sort_gids=options.sort_gids,
+                        allow_sort=True,
+                        leaf_size=64
+                    )
+                else:
+                    from pysph.base.gpu_nnps import ZOrderGPUNNPS
+                    nnps = ZOrderGPUNNPS(
+                        dim=solver.dim,
+                        particles=self.particles,
+                        radius_scale=kernel.radius_scale,
+                        domain=self.domain,
+                        cache=True,
+                        sort_gids=options.sort_gids)
 
             elif options.nnps == 'box':
                 nnps = BoxSortNNPS(
