@@ -20,7 +20,7 @@ cdef class OctreeGPUNNPS2(GPUNNPS):
     def __init__(self, int dim, list particles, double radius_scale=2.0,
                  int ghost_layers=1, domain=None, bint fixed_h=False,
                  bint cache=True, bint sort_gids=False, ctx=None,
-                 allow_sort = False):
+                 allow_sort = False, leaf_size=32):
         GPUNNPS.__init__(
             self, dim, particles, radius_scale, ghost_layers, domain,
             cache, sort_gids, ctx
@@ -36,7 +36,7 @@ cdef class OctreeGPUNNPS2(GPUNNPS):
         self.octrees = []
         for i in range(self.narrays):
             self.octrees.append(OctreeGPU(self.pa_wrappers[i].pa, radius_scale,
-                                          self.use_double))
+                                          self.use_double, leaf_size=leaf_size))
         self.allow_sort = allow_sort
         self.domain.update()
         self.update()
