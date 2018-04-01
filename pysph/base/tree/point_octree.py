@@ -32,8 +32,8 @@ class IncompatibleOctreesException(Exception):
     pass
 
 
-def memoize(f, *args, **kwargs):
-    return f
+# def memoize(f, *args, **kwargs):
+#    return f
 
 
 LEAF_KERNEL_TEMPLATE = r"""
