@@ -111,7 +111,6 @@ cdef class ZOrderGPUNNPS(GPUNNPS):
                 scan_kernel=GenericScanKernel, key_expr="keys[i]",
                 sort_arg_names=["pids", "keys"]
             )
-            self.radix_sort = profile_kernel(self.radix_sort, 'radix_sort')
 
         (sorted_indices, sorted_keys), evnt = self.radix_sort(
             self.pids[pa_index].array, self.pid_keys[pa_index].array, key_bits=64
