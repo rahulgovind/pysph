@@ -718,6 +718,50 @@ class OctreeGPU(object):
                            neighbor_cid_count.array, neighbor_cids.array)
         return neighbor_cid_count, neighbor_cids
 
+    def _find_neighbor_lengths_elementwise(self, neighbor_cid_count, neighbor_cids, octree_src,
+                               neighbor_count):
+        n = self.pa.get_number_of_particles()
+        wgs = self.leaf_size
+        pa_gpu_dst = self.pa.gpu
+        pa_gpu_src = octree_src.pa.gpu
+        dtype = np.float64 if self.use_double else np.float32
+
+        find_neighbor_counts = self.helper.get_kernel('find_neighbor_counts_elementwise',
+                                                      sorted=self.sorted)
+        find_neighbor_counts(self.unique_cids_map.array, octree_src.pids.array, self.pids.array,
+                             self.cids.array,
+                             octree_src.pbounds.array, self.pbounds.array,
+                             pa_gpu_src.x, pa_gpu_src.y, pa_gpu_src.z, pa_gpu_src.h,
+                             pa_gpu_dst.x, pa_gpu_dst.y, pa_gpu_dst.z, pa_gpu_dst.h,
+                             dtype(self.radius_scale),
+                             neighbor_cid_count.array,
+                             neighbor_cids.array,
+                             neighbor_count)
+
+    def _find_neighbors_elementwise(self, neighbor_cid_count, neighbor_cids, octree_src,
+                        start_indices, neighbors):
+        # TODO: Extra checking needed to ensure octrees compatible
+        assert(octree_src.sorted == self.sorted)
+        assert(octree_src.leaf_size == self.leaf_size)
+
+        n = self.pa.get_number_of_particles()
+        wgs = self.leaf_size
+        pa_gpu_dst = self.pa.gpu
+        pa_gpu_src = octree_src.pa.gpu
+        dtype = np.float64 if self.use_double else np.float32
+
+        find_neighbors = self.helper.get_kernel('find_neighbors_elementwise', sorted=self.sorted)
+        find_neighbors(self.unique_cids_map.array, octree_src.pids.array, self.pids.array,
+                       self.cids.array,
+                       octree_src.pbounds.array, self.pbounds.array,
+                       pa_gpu_src.x, pa_gpu_src.y, pa_gpu_src.z, pa_gpu_src.h,
+                       pa_gpu_dst.x, pa_gpu_dst.y, pa_gpu_dst.z, pa_gpu_dst.h,
+                       dtype(self.radius_scale),
+                       neighbor_cid_count.array,
+                       neighbor_cids.array,
+                       start_indices,
+                       neighbors)
+
     def _find_neighbor_lengths(self, neighbor_cid_count, neighbor_cids, octree_src,
                                neighbor_count):
         n = self.pa.get_number_of_particles()

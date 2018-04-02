@@ -287,8 +287,6 @@ class DictBoxSortNNPSTestCase(NNPSTestCase):
         self._test_neighbors_by_particle(src_index=3, dst_index=3,
                                          dst_numPoints=self.numPoints4)
 
-    def test_uniform_and_variable(self):
-        pass
 
     def test_repeated(self):
         self.test_neighbors_aa()

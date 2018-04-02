@@ -83,7 +83,7 @@ cdef class OctreeGPUNNPS2(GPUNNPS):
     cdef void find_neighbor_lengths(self, nbr_lengths):
         octree_src = self.octrees[self.src_index]
         octree_dst = self.octrees[self.dst_index]
-        octree_dst._find_neighbor_lengths(
+        octree_dst._find_neighbor_lengths_elementwise(
             self.neighbor_cid_counts, self.neighbor_cids, octree_src,
             nbr_lengths
         )
@@ -91,7 +91,7 @@ cdef class OctreeGPUNNPS2(GPUNNPS):
     cdef void find_nearest_neighbors_gpu(self, nbrs, start_indices):
         octree_src = self.octrees[self.src_index]
         octree_dst = self.octrees[self.dst_index]
-        octree_dst._find_neighbors(
+        octree_dst._find_neighbors_elementwise(
             self.neighbor_cid_counts, self.neighbor_cids, octree_src,
             start_indices, nbrs
         )
