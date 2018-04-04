@@ -301,33 +301,3 @@ class OctreeNNPSTestCase(NNPSTestCase):
                 np.ones(octree.unique_cid_count, dtype=np.int32),
                 leaf_id_count
             )
-
-    def _test_neighbors_by_particle(self, src_index, dst_index):
-        octree_dst = self.octrees[dst_index]
-        octree_src = self.octrees[src_index]
-        nbr_cid_lengths, nbr_cids = octree_dst._find_neighbor_cids(octree_src)
-        n = self.particles[dst_index].get_number_of_particles()
-        neighbor_count = DeviceArray(np.uint32, n)
-        octree_dst._find_neighbor_lengths(nbr_cid_lengths, nbr_cids,
-                                          octree_src, neighbor_count.array)
-        _test_nnps(neighbor_count.array.get(),
-                   self.particles[dst_index],
-                   self.particles[src_index], radius_scale=2.)
-
-    def test_neighbors_aa(self):
-        self._test_neighbors_by_particle(src_index=0, dst_index=0)
-
-    def test_neighbors_ab(self):
-        self._test_neighbors_by_particle(src_index=0, dst_index=1)
-
-    def test_neighbors_ba(self):
-        self._test_neighbors_by_particle(src_index=1, dst_index=0)
-
-    def test_neighbors_bb(self):
-        self._test_neighbors_by_particle(src_index=1, dst_index=1)
-
-    def test_neighbors_cc(self):
-        self._test_neighbors_by_particle(src_index=2, dst_index=2)
-
-    def test_neighbors_dd(self):
-        self._test_neighbors_by_particle(src_index=3, dst_index=3)
