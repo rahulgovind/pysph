@@ -786,8 +786,8 @@ class OctreeGPU(object):
         assert(octree_src.sorted == self.sorted)
         assert(octree_src.leaf_size == self.leaf_size)
 
-        n = self.pa.get_number_of_particles()
-        wgs = self.leaf_size
+        wgs = self.leaf_size if self.leaf_size % 32 == 0 else \
+            self.leaf_size + 32 - self.leaf_size % 32
         pa_gpu_dst = self.pa.gpu
         pa_gpu_src = octree_src.pa.gpu
         dtype = np.float64 if self.use_double else np.float32
