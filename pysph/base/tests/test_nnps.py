@@ -156,7 +156,6 @@ class NNPSTestCase(unittest.TestCase):
 
         """
         # Failing test case
-        numpy.random.seed(1)
         self.numPoints1 = numPoints1 = 1 << 10
         self.numPoints2 = numPoints2 = 1 << 11
         self.numPoints3 = numPoints3 = 1 << 10
