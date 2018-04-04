@@ -110,12 +110,13 @@
 </%def>
 
 <%def name="reorder_particles_src()" cached="False">
-    if (cids[i] < csum_nodes_prev || offsets[cids[i] - csum_nodes_prev] == -1) {
+    int curr_cid = cids[i] - csum_nodes_prev;
+    if (curr_cid < 0 || offsets[curr_cid] == -1) {
         sfc_next[i] = sfc[i];
         cids_next[i] = cids[i];
         pids_next[i] = pids[i];
     } else {
-        uint2 pbound_here = pbounds[cids[i] - csum_nodes_prev];
+        uint2 pbound_here = pbounds[curr_cid];
         char octant = eye_index(sfc[i], mask, rshift);
 
         global uint *octv = (global uint *)(octant_vector + i);
@@ -124,9 +125,10 @@
         octv = (global uint *)(octant_vector + pbound_here.s1 - 1);
         sum += (octant == 0) ? 0 : octv[octant - 1];
 
-        sfc_next[pbound_here.s0 + sum - 1] = sfc[i];
-        pids_next[pbound_here.s0 + sum - 1] = pids[i];
-        cids_next[pbound_here.s0 + sum - 1] = offsets[cids[i] - csum_nodes_prev] + octant;
+        uint new_index = pbound_here.s0 + sum - 1;
+        sfc_next[new_index] = sfc[i];
+        pids_next[new_index] = pids[i];
+        cids_next[new_index] = offsets[curr_cid] + octant;
     }
 </%def>
 
@@ -141,14 +143,14 @@
     offsets[curr_offset + i] = is_last_level ? -1 : offsets_next[i];
 </%def>
 
-<%def name="set_node_data_args()", cached="True">
+<%def name="set_node_data_args()", cached="False">
     int *offsets_prev, uint2 *pbounds_prev,
     int *offsets, uint2 *pbounds,
     char *seg_flag, uint8 *octant_vector,
     uint csum_nodes
 </%def>
 
-<%def name="set_node_data_src()", cached="True">
+<%def name="set_node_data_src()", cached="False">
     uint2 pbound_here = pbounds_prev[i];
     int child_offset = offsets_prev[i];
     if (child_offset == -1) {
@@ -168,123 +170,6 @@
             seg_flag[pbound_here.s0 + octv[${i - 1}]] = 1;
         % endif
     % endfor
-</%def>
-
-<%def name="store_neighbor_cids_args(data_t, sorted)" cached="False">
-    int *unique_cids_idx,
-    int *pids,
-    int *offsets_dst, uint2 *pbounds_dst,
-    ${data_t} *x, ${data_t} *y, ${data_t} *z, ${data_t} cell_size,
-    ${data_t}3 min,
-    int *neighbour_cids,
-    char *levels,
-    char octree_depth_dst, char max_depth
-</%def>
-
-<%def name="store_neighbor_cids_src(data_t, sorted)" cached="False">
-    int idx = unique_cids_idx[i];
-    char depth_here = MIN(levels[idx] - 1, octree_depth_dst);
-    int pid;
-    % if not sorted:
-        pid = pids[idx];
-    % else:
-        pid = idx;
-    % endif
-    uint c_x = floor((x[pid] - min.x) / cell_size);
-    uint c_y = floor((y[pid] - min.y) / cell_size);
-    uint c_z = floor((z[pid] - min.z) / cell_size);
-
-    uint3 c = uint3(floor((x[pid] - min.x) / cell_size),
-                    floor((y[pid] - min.y) / cell_size),
-                    floor((z[pid] - min.z) / cell_size));
-    c_x >>= (max_depth - depth_here - 1);
-    c_y >>= (max_depth - depth_here - 1);
-    c_z >>= (max_depth - depth_here - 1);
-    int max_int = (1 << depth_here);
-    ulong key_orig = interleave(c.x, c.y , c.z);
-    int num_keys = 0;
-    ulong keys[27];
-
-    % for i, j, k in product(range(-1, 2), repeat=3):
-        if ((IN_BOUNDS(c_x + (${i}), 0, max_int) && IN_BOUNDS(c_y + (${j}), 0, max_int) && IN_BOUNDS(c_z + (${k}), 0, max_int))) {
-            ulong key = interleave(c_x + (${i}), c_y + (${j}), c_z + (${k}));
-            keys[num_keys++] = find_smallest_containing_node(offsets_dst, key, depth_here);
-        }
-    % endfor
-
-    insertion_sort(keys, num_keys);
-
-    int unique_keys = 1;
-    for (int j = 1; j < num_keys; j++) {
-        if (keys[j] != keys[j-1])
-            keys[unique_keys++] = keys[j];
-    }
-
-    for (int j = 0; j < 27; j++) {
-        neighbour_cids[i * 27 + j] = (j < unique_keys) ? keys[j] : -1;
-    }
-
-</%def>
-
-<%def name="reduction_template()" cached="False">\
-
-</%def>
-
-<%def name="set_node_bounds_args(data_t, sorted)" cached="False">
-    uint2 *pbounds, int *offsets, int *pids,
-    ${data_t} *gnode_data,
-    ${data_t} *x0, ${data_t} *x1, ${data_t} *x2, ${data_t} *h,
-    int csum_nodes
-</%def>
-
-<%def name="set_node_bounds_src(data_t, sorted)" cached="False">
-    int cidx = i;
-    % for i in range(3):
-        ${data_t} xmin${i} = INF;
-        ${data_t} xmax${i} = -INF;
-    % endfor
-
-    ${data_t} hmax = 0;
-    global ${data_t} *node_data;
-    if (offsets[cidx] == -1) {
-        // Leaf
-
-        uint2 pbound_here = pbounds[cidx];
-        int pid;
-        for (int j=pbound_here.s0; j < pbound_here.s1; j++) {
-            %if sorted:
-                pid = j;
-            % else:
-                pid = pids[j];
-            %endif
-            % for i in range(3):
-                xmin${i} = MIN(xmin${i}, x${i}[pid]);
-                xmax${i} = MAX(xmax${i}, x${i}[pid]);
-                hmax = MAX(hmax, h[pid]);
-            % endfor
-
-        }
-    } else {
-        // Non-leaf
-        node_data = gnode_data + 8 * offsets[cidx];
-        for (int j=0; j < 8; j++) {
-            % for i in range(3):
-                xmin${i} = MIN(xmin${i}, node_data[${i}]);
-                xmax${i} = MAX(xmax${i}, node_data[3 + ${i}]);
-            % endfor
-            hmax = MAX(hmax, node_data[6]);
-            node_data += 8;
-        }
-    }
-
-    // Update current node
-    node_data = gnode_data + 8 * cidx;
-    % for i in range(3):
-        node_data[${i}] = xmin${i};
-        node_data[${i} + 3] = xmax${i};
-    % endfor
-    node_data[6] = hmax;
-    node_data[7] = offsets[cidx];
 </%def>
 
 <%def name="dfs_template(data_t)" cached="False">
