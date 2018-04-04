@@ -147,7 +147,7 @@
     int *offsets_prev, uint2 *pbounds_prev,
     int *offsets, uint2 *pbounds,
     char *seg_flag, uint8 *octant_vector,
-    uint csum_nodes
+    uint csum_nodes, uint N
 </%def>
 
 <%def name="set_node_data_src()", cached="False">
@@ -158,18 +158,19 @@
     }
     child_offset -= csum_nodes;
 
-    global uint *octv = (global uint *)(octant_vector + pbound_here.s1 - 1);
+    uint8 octv = octant_vector[pbound_here.s1 - 1];
+
     % for i in range(8):
         % if i == 0:
-            pbounds[child_offset] = (uint2)(pbound_here.s0,
-                                            pbound_here.s0 + octv[0]);
-            seg_flag[pbound_here.s0] = 1;
+            pbounds[child_offset] = (uint2)(pbound_here.s0, pbound_here.s0 + octv.s0);
         % else:
-            pbounds[child_offset + ${i}] = (uint2)(pbound_here.s0 + octv[${i - 1}],
-                                                   pbound_here.s0 + octv[${i}]);
-            seg_flag[pbound_here.s0 + octv[${i - 1}]] = 1;
+            pbounds[child_offset + ${i}] = (uint2)(pbound_here.s0 + octv.s${i - 1},
+                                                   pbound_here.s0 + octv.s${i});
+			if (pbound_here.s0 + octv.s${i - 1} < N)
+               seg_flag[pbound_here.s0 + octv.s${i - 1}] = 1;
         % endif
     % endfor
+
 </%def>
 
 <%def name="dfs_template(data_t)" cached="False">

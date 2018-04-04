@@ -287,13 +287,13 @@ class OctreeGPU(object):
                            self.pid_keys.array, self.pids.array)
 
     def _update_node_data(self, offsets_prev, pbounds_prev, offsets, pbounds, seg_flag, octants,
-                          csum_nodes, csum_nodes_next):
+                          csum_nodes, csum_nodes_next, n):
         """Update node data. Return number of children which are leaves."""
 
         # Update particle-related data of children
         set_node_data = self.helper.get_kernel("set_node_data")
         set_node_data(offsets_prev.array, pbounds_prev.array, offsets.array, pbounds.array,
-                      seg_flag.array, octants.array, np.uint32(csum_nodes))
+                      seg_flag.array, octants.array, np.uint32(csum_nodes), np.uint32(n))
 
         # Set children offsets
         leaf_count = DeviceArray(np.uint32, 1)
@@ -345,7 +345,8 @@ class OctreeGPU(object):
                                                      offsets_temp[-1], pbounds_temp[-1],
                                                      seg_flag, octants,
                                                      csum_nodes,
-                                                     csum_nodes + self.num_nodes[-1])
+                                                     csum_nodes + self.num_nodes[-1],
+                                                     n)
 
             csum_nodes_prev = csum_nodes
             csum_nodes += self.num_nodes[-1]
