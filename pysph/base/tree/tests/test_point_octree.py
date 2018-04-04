@@ -207,6 +207,91 @@ class OctreeNNPSTestCase(NNPSTestCase):
             self.octrees[i].refresh(xmin - hmin / 2, xmax + hmin / 2, hmin)
             self.octrees[i]._set_node_bounds()
 
+
+    def test_depth_and_inclusiveness(self):
+        """
+        Traverse tree and check if max depth is correct
+        Additionally check if particle sets of siblings is disjoint
+        and union of particle sets of a nodes children = nodes own children
+        :return:
+        """
+        for octree in self.octrees:
+            s = [0, ]
+            d = [0, ]
+
+            offsets = octree.offsets.array.get()
+            pbounds = octree.pbounds.array.get()
+
+            max_depth = octree.depth
+            max_depth_here = 0
+            pids = set()
+
+            while len(s) != 0:
+                n = s[0]
+                depth = d[0]
+                max_depth_here = max(max_depth_here, depth)
+                pbound = pbounds[n]
+                assert (depth <= max_depth)
+
+                del s[0]
+                del d[0]
+
+                if offsets[n] == -1:
+                    # assert (pbounds[n][1] - pbounds[n][0] <= 32)
+                    for i in range(pbound[0], pbound[1]):
+                        pids.add(i)
+                    continue
+
+                # Particle ranges of children are contiguous
+                # and are contained within parent's particle arange
+                l = pbound[0]
+                for i in range(8):
+                    child_idx = offsets[n] + i
+                    assert (pbounds[child_idx][0] == l)
+                    assert (pbounds[child_idx][0] <= pbounds[child_idx][1])
+                    l = pbounds[child_idx][1]
+
+                    assert (child_idx < len(offsets))
+                    s.append(child_idx)
+                    d.append(depth + 1)
+                assert (l == pbound[1])
+
+    def test_node_bounds(self):
+        # TODO: Add test to check h
+
+        for k, octree in enumerate(self.octrees):
+            octree._set_node_bounds()
+            pids = octree.pids.array.get()
+            offsets = octree.offsets.array.get()
+            pbounds = octree.pbounds.array.get()
+            node_xmin = octree.node_xmin.array.get()
+            node_xmax = octree.node_xmax.array.get()
+            pa = self.particles[k]
+            x = pa.x[pids]
+            y = pa.y[pids]
+            z = pa.z[pids]
+            for i in range(len(offsets)):
+                nxmin = node_xmin[i]
+                nxmax = node_xmax[i]
+
+                for j in range(pbounds[i][0], pbounds[i][1]):
+                    assert (nxmin[0] <= np.float32(x[j]) <= nxmax[0])
+                    assert (nxmin[1] <= np.float32(y[j]) <= nxmax[1])
+                    assert (nxmin[2] <= np.float32(z[j]) <= nxmax[2])
+
+                # Check that children nodes don't overlap
+                if offsets[i] != -1:
+                    _check_children_overlap(node_xmin, node_xmax, offsets[i])
+
+    def test_dfs_traversal(self):
+        for octree in self.octrees:
+            leaf_id_count = _dfs_find_leaf(octree)
+            np.testing.assert_array_equal(
+                np.ones(octree.unique_cid_count, dtype=np.int32),
+                leaf_id_count
+            )
+
+
     def _test_neighbors_by_particle(self, src_index, dst_index):
         octree_dst = self.octrees[dst_index]
         octree_src = self.octrees[src_index]
