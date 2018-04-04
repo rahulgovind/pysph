@@ -782,26 +782,42 @@ class OctreeGPU(object):
                        neighbors)
 
     def _find_neighbor_lengths(self, neighbor_cid_count, neighbor_cids, octree_src,
-                               neighbor_count):
+                               neighbor_count, use_partitions=False):
         n = self.pa.get_number_of_particles()
         wgs = self.leaf_size
         pa_gpu_dst = self.pa.gpu
         pa_gpu_src = octree_src.pa.gpu
         dtype = np.float64 if self.use_double else np.float32
 
-        find_neighbor_counts = self.helper.get_kernel('find_neighbor_counts', sorted=self.sorted,
-                                                      wgs=wgs)
-        find_neighbor_counts(self.unique_cids.array, octree_src.pids.array, self.pids.array,
-                             self.cids.array,
-                             octree_src.pbounds.array, self.pbounds.array,
-                             pa_gpu_src.x, pa_gpu_src.y, pa_gpu_src.z, pa_gpu_src.h,
-                             pa_gpu_dst.x, pa_gpu_dst.y, pa_gpu_dst.z, pa_gpu_dst.h,
-                             dtype(self.radius_scale),
-                             neighbor_cid_count.array,
-                             neighbor_cids.array,
-                             neighbor_count,
-                             range=slice(wgs * self.unique_cid_count),
-                             fixed_work_items=wgs)
+        def find_neighbor_counts_for_partition(partition_cids, partition_size,
+                                         partition_wgs, q=None):
+            find_neighbor_counts = self.helper.get_kernel('find_neighbor_counts', sorted=self.sorted,
+                                                          wgs=wgs)
+            find_neighbor_counts(partition_cids.array, octree_src.pids.array, self.pids.array,
+                                 self.cids.array,
+                                 octree_src.pbounds.array, self.pbounds.array,
+                                 pa_gpu_src.x, pa_gpu_src.y, pa_gpu_src.z, pa_gpu_src.h,
+                                 pa_gpu_dst.x, pa_gpu_dst.y, pa_gpu_dst.z, pa_gpu_dst.h,
+                                 dtype(self.radius_scale),
+                                 neighbor_cid_count.array,
+                                 neighbor_cids.array,
+                                 neighbor_count,
+                                 range=slice(wgs * partition_size),
+                                 fixed_work_items=partition_wgs,
+                                 queue=(get_queue() if q is None else q))
+
+        if use_partitions and wgs > 32:
+            if wgs < 128:
+                wgs1 = 32
+            else:
+                wgs1 = 64
+
+            m1, n1 = self.get_leaf_size_partitions(0, wgs1)
+            find_neighbor_counts_for_partition(m1, n1, min(wgs, wgs1))
+            m2, n2 = self.get_leaf_size_partitions(wgs1, wgs)
+            find_neighbor_counts_for_partition(m2, n2, wgs)
+        else:
+            find_neighbor_counts_for_partition(self.unique_cids, self.unique_cid_count, wgs)
 
     def _find_neighbors(self, neighbor_cid_count, neighbor_cids, octree_src,
                         start_indices, neighbors, use_partitions=False):
@@ -833,12 +849,16 @@ class OctreeGPU(object):
                            fixed_work_items=partition_wgs,
                            queue=(get_queue() if q is None else q))
 
-        if use_partitions:
-            m1, n1 = self.get_leaf_size_partitions(0, 32)
-            find_neighbors_for_partition(m1, n1, 32)
-            if wgs != 32:
-                m2, n2 = self.get_leaf_size_partitions(32, wgs)
-                find_neighbors_for_partition(m2, n2, wgs, get_queue2())
+        if use_partitions and wgs > 32:
+            if wgs < 128:
+                wgs1 = 32
+            else:
+                wgs1 = 64
+
+            m1, n1 = self.get_leaf_size_partitions(0, wgs1)
+            find_neighbors_for_partition(m1, n1, min(wgs, wgs1))
+            m2, n2 = self.get_leaf_size_partitions(wgs1, wgs)
+            find_neighbors_for_partition(m2, n2, wgs)
         else:
             find_neighbors_for_partition(self.unique_cids, self.unique_cid_count, wgs)
 
