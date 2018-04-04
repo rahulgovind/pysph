@@ -25,6 +25,7 @@ from pysph.base.particle_array import ParticleArray
 
 _ctx = None
 _queue = None
+_queue2 = None
 _profile_info = defaultdict(float)
 _cpu_profile_info = defaultdict(float)
 # args: uint* indices, dtype array, int length
@@ -69,6 +70,18 @@ def get_queue():
             properties = cl.command_queue_properties.PROFILING_ENABLE
         _queue = cl.CommandQueue(get_context(), properties=properties)
     return _queue
+
+
+
+
+def get_queue2():
+    global _queue2
+    if _queue2 is None:
+        properties = None
+        if get_config().profile:
+            properties = cl.command_queue_properties.PROFILING_ENABLE
+        _queue2 = cl.CommandQueue(get_context(), properties=properties)
+    return _queue2
 
 
 def set_queue(q):
@@ -122,6 +135,7 @@ def reset_profile():
     global _cpu_profile_info
     _profile_info = defaultdict(float)
     _cpu_profile_info = defaultdict(float)
+
 
 def profile_kernel(kernel, name):
     def _profile_knl(*args, **kwargs):

@@ -126,6 +126,7 @@ class OctreeTestCase(unittest.TestCase):
         pa = _gen_uniform_dataset(self.N, 0.2, seed=0)
         self.octree = OctreeGPU(pa, radius_scale=1., use_double=use_double,
                                 leaf_size=64)
+        self.leaf_size=64
         self.octree.refresh(np.array([0., 0., 0.]), np.array([1., 1., 1.]),
                             np.min(pa.h))
         self.pa = pa
@@ -218,6 +219,20 @@ class OctreeTestCase(unittest.TestCase):
             np.ones(self.octree.unique_cid_count, dtype=np.int32),
             leaf_id_count
         )
+
+    def test_get_leaf_size_partitions(self):
+        a, b = np.random.randint(0, self.leaf_size, size=2)
+        a, b = min(a, b), max(a, b)
+
+        pbounds = self.octree.pbounds.array.get()
+        offsets = self.octree.offsets.array.get()
+
+        mapping, count = self.octree.get_leaf_size_partitions(a, b)
+        mapping = mapping.array.get()
+        map_set_gpu = {mapping[i] for i in range(count)}
+        map_set_here = {i for i in range(len(offsets))
+                   if offsets[i] == -1 and a < (pbounds[i][1] - pbounds[i][0]) <= b}
+        assert(map_set_gpu == map_set_here)
 
     def tearDown(self):
         del self.octree

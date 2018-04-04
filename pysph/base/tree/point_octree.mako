@@ -178,7 +178,7 @@
     ${data_t} ndst[8];
     ${data_t} nsrc[8];
 
-    int cid = cids[unique_cid_idx[i]];
+    int cid = unique_cids[i];
     % for i in range(8):
         ndst[${i}] = n1[cid * 8 + ${i}];
     % endfor
@@ -242,7 +242,7 @@
 </%def>
 
 <%def name="find_neighbor_cid_counts_args(data_t)" cached="False">\
-    int *unique_cid_idx, int *cids, uint2 *pbounds, int *offsets, ${data_t} *n1, ${data_t} *n2, int *cnt
+    int *unique_cids, int *cids, uint2 *pbounds, int *offsets, ${data_t} *n1, ${data_t} *n2, int *cnt
 </%def>
 
 <%def name="find_neighbor_cid_counts_src(data_t)" cached="False">\
@@ -269,7 +269,7 @@
 </%def>
 
 <%def name="find_neighbor_cids_args(data_t)" cached="False">\
-    int *unique_cid_idx, int *cids, uint2 *pbounds, int *offsets, ${data_t} *n1, ${data_t} *n2, int *cnt,
+    int *unique_cids, int *cids, uint2 *pbounds, int *offsets, ${data_t} *n1, ${data_t} *n2, int *cnt,
     int *neighbor_cids
 </%def>
 
@@ -290,7 +290,7 @@
 <%def name="find_neighbors_template(data_t, sorted, wgs)" cached="False">
     /*
      * Property owners
-     * octree_dst: cids, unique_cid_idx
+     * octree_dst: cids, unique_cids
      * octree_src: neighbor_cid_offset, neighbor_cids
      * self evident: xsrc, ysrc, zsrc, hsrc,
                      xdst, ydst, zdst, hdst,
@@ -301,7 +301,7 @@
     // Fetch dst particles
     ${data_t} xd, yd, zd, hd;
 
-    int cid_dst = cids[unique_cid_idx[idx]];
+    int cid_dst = unique_cids[idx];
     uint2 pbound_here = pbounds_dst[cid_dst];
     char svalid = (pbound_here.s0 + lid < pbound_here.s1);
     int pid_dst;
@@ -336,50 +336,53 @@
     while (offset_src < offset_lim) {
         cid_src = neighbor_cids[offset_src];
         pbound_here2 = pbounds_src[cid_src];
+
         offset_src++;
 
-        // Copy src data
-        if (pbound_here2.s0 + lid < pbound_here2.s1) {
-            %if sorted:
-                pid_src = pbound_here2.s0 + lid;
-            % else:
-                pid_src = pids_src[pbound_here2.s0 + lid];
-            %endif
-            xs[lid] = xsrc[pid_src];
-            ys[lid] = ysrc[pid_src];
-            zs[lid] = zsrc[pid_src];
-            hs[lid] = hsrc[pid_src];
-        }
-        m = pbound_here2.s1 - pbound_here2.s0;
-
-        barrier(CLK_LOCAL_MEM_FENCE);
-
-        if (svalid) {
-            for (int j=0; j < m; j++) {
-                % if sorted:
-                    pid_src= pbound_here2.s0 + j;
+        while (pbound_here2.s0 < pbound_here2.s1) {
+            // Copy src data
+            if (pbound_here2.s0 + lid < pbound_here2.s1) {
+                %if sorted:
+                    pid_src = pbound_here2.s0 + lid;
                 % else:
-                    pid_src = pids_src[pbound_here2.s0 + j];
-                % endif
-                ${data_t} dist2 = NORM2(xs[j] - xd,
-                                        ys[j] - yd,
-                                        zs[j] - zd);
+                    pid_src = pids_src[pbound_here2.s0 + lid];
+                %endif
+                xs[lid] = xsrc[pid_src];
+                ys[lid] = ysrc[pid_src];
+                zs[lid] = zsrc[pid_src];
+                hs[lid] = hsrc[pid_src];
+            }
+            m = min(pbound_here2.s1, pbound_here2.s0 + ${wgs}) - pbound_here2.s0;
 
-                r2 = MAX(hs[j], hd) * radius_scale;
-                r2 *= r2;
-                if (dist2 < r2) {
-                    ${caller.query()}
+            barrier(CLK_LOCAL_MEM_FENCE);
+
+            if (svalid) {
+                for (int j=0; j < m; j++) {
+                    % if sorted:
+                        pid_src= pbound_here2.s0 + j;
+                    % else:
+                        pid_src = pids_src[pbound_here2.s0 + j];
+                    % endif
+                    ${data_t} dist2 = NORM2(xs[j] - xd,
+                                            ys[j] - yd,
+                                            zs[j] - zd);
+
+                    r2 = MAX(hs[j], hd) * radius_scale;
+                    r2 *= r2;
+                    if (dist2 < r2) {
+                        ${caller.query()}
+                    }
                 }
             }
+            pbound_here2.s0 += ${wgs};
+            barrier(CLK_LOCAL_MEM_FENCE);
         }
-
-        barrier(CLK_LOCAL_MEM_FENCE);
     }
     ${caller.post_loop()}
 </%def>
 
 <%def name="find_neighbor_counts_args(data_t, sorted, wgs)" cached="False">
-    int *unique_cid_idx, int *pids_src, int *pids_dst, int *cids,
+    int *unique_cids, int *pids_src, int *pids_dst, int *cids,
     uint2 *pbounds_src, uint2 *pbounds_dst,
     ${data_t} *xsrc, ${data_t} *ysrc, ${data_t} *zsrc, ${data_t} *hsrc,
     ${data_t} *xdst, ${data_t} *ydst, ${data_t} *zdst, ${data_t} *hdst,
@@ -403,7 +406,7 @@
 </%def>
 
 <%def name="find_neighbors_args(data_t, sorted, wgs)" cached="False">
-    int *unique_cid_idx, int *pids_src, int *pids_dst, int *cids,
+    int *unique_cids, int *pids_src, int *pids_dst, int *cids,
     uint2 *pbounds_src, uint2 *pbounds_dst,
     ${data_t} *xsrc, ${data_t} *ysrc, ${data_t} *zsrc, ${data_t} *hsrc,
     ${data_t} *xdst, ${data_t} *ydst, ${data_t} *zdst, ${data_t} *hdst,

@@ -25,6 +25,7 @@ cdef class OctreeGPUNNPS2(GPUNNPS):
     cdef public object neighbor_cids
     cdef public list octrees
     cdef public bint use_elementwise
+    cdef public bint use_partitions
     # cpdef get_spatially_ordered_indices(self, int pa_index)
 
     cpdef _bin(self, int pa_index)
