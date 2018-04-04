@@ -155,6 +155,8 @@ class NNPSTestCase(unittest.TestCase):
         are checked from a -> b, b -> a , a -> a and b -> b
 
         """
+        # Failing test case
+        numpy.random.seed(1)
         self.numPoints1 = numPoints1 = 1 << 10
         self.numPoints2 = numPoints2 = 1 << 11
         self.numPoints3 = numPoints3 = 1 << 10
