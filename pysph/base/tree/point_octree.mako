@@ -45,10 +45,16 @@
         ${data_t} h = MAX(n1[6], n2[6]);
 
         % for i in range(3):
+            // Distance in x_i coord between centers
             cdist = fabs((n1[${i}] + n1[3 + ${i}]) / 2 - (n2[${i}] + n2[3 + ${i}]) / 2);
+
+            // Width of cells in given direction
             w1 = fabs(n1[${i}] - n1[3 + ${i}]);
             w2 = fabs(n2[${i}] - n2[3 + ${i}]);
             wavg = AVG(w1, w2);
+
+            // Closest distance between cells in this direction
+            // is given by distance between centres - width_1 / 2 - width_2 / 2
             res &= (cdist - wavg <= h);
         % endfor
 

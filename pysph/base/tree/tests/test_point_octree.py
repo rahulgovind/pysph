@@ -34,13 +34,26 @@ def _dfs_find_leaf(octree):
     return leaf_id_count.array.get()
 
 
+def _check_children_overlap(node_xmin, node_xmax, child_offset):
+    for j in range(8):
+        nxmin1 = node_xmin[child_offset + j]
+        nxmax1 = node_xmax[child_offset + j]
+        for k in range(8):
+            nxmin2 = node_xmin[child_offset + k]
+            nxmax2 = node_xmax[child_offset + k]
+            if j != k:
+                assert (nxmax1[0] <= nxmin2[0] or nxmax2[0] <= nxmin1[0] or
+                        nxmax1[1] <= nxmin2[1] or nxmax2[1] <= nxmin1[1] or
+                        nxmax1[2] <= nxmin2[2] or nxmax2[2] <= nxmin1[2])
+
+
 class OctreeTestCase(unittest.TestCase):
     def setUp(self):
         use_double = False
-        self.N = 2000
+        self.N = 3000
         pa = _gen_uniform_dataset(self.N, 0.2, seed=0)
-        self.octree = OctreeGPU(pa,
-                                radius_scale=1., use_double=use_double)
+        self.octree = OctreeGPU(pa, radius_scale=1., use_double=use_double,
+                                leaf_size=64)
         self.octree.refresh(np.array([0., 0., 0.]), np.array([1., 1., 1.]),
                             np.min(pa.h))
         self.pa = pa
@@ -123,6 +136,10 @@ class OctreeTestCase(unittest.TestCase):
                 assert (nxmin[0] <= np.float32(x[j]) <= nxmax[0])
                 assert (nxmin[1] <= np.float32(y[j]) <= nxmax[1])
                 assert (nxmin[2] <= np.float32(z[j]) <= nxmax[2])
+
+            # Check that children nodes don't overlap
+            if offsets[i] != -1:
+                _check_children_overlap(node_xmin, node_xmax, offsets[i])
 
     def test_dfs_traversal(self):
         leaf_id_count = _dfs_find_leaf(self.octree)
