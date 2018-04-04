@@ -496,7 +496,7 @@ class OctreeGPU(object):
                 #define INF 1e6
                 #define SQR(X) ((X) * (X))
 
-                char contains(private int *n1, private int *n2) {
+                char contains(private ${data_t} *n1, private ${data_t} *n2) {
                     // Check if node n1 contains node n2
                     char res = 1;
                     %for i in range(3):
