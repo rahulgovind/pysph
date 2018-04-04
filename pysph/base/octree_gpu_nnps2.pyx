@@ -88,24 +88,30 @@ cdef class OctreeGPUNNPS2(GPUNNPS):
         octree_dst = self.octrees[self.dst_index]
         # TODO: use elementwise for CPU
 
+        args = []
         if self.use_elementwise:
             find_neighbor_lengths = octree_dst._find_neighbor_lengths_elementwise
         else:
             find_neighbor_lengths = octree_dst._find_neighbor_lengths
+            args.append(self.use_partitions)
 
         find_neighbor_lengths(
             self.neighbor_cid_counts, self.neighbor_cids, octree_src,
-            nbr_lengths
+            nbr_lengths, *args
         )
 
     cdef void find_nearest_neighbors_gpu(self, nbrs, start_indices):
         octree_src = self.octrees[self.src_index]
         octree_dst = self.octrees[self.dst_index]
 
-        find_neighbors = octree_dst._find_neighbors_elementwise if self.use_elementwise else \
-            octree_dst._find_neighbors
+        args = []
+        if self.use_elementwise:
+            find_neighbors = octree_dst._find_neighbors_elementwise
+        else:
+            find_neighbors = octree_dst._find_neighbors
+            args.append(self.use_partitions)
 
         find_neighbors(
             self.neighbor_cid_counts, self.neighbor_cids, octree_src,
-            start_indices, nbrs, self.use_partitions
+            start_indices, nbrs, *args
         )
