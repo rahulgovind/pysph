@@ -229,7 +229,7 @@ class OctreeGPU(object):
         self.depth = 0
         self.leaf_size = leaf_size
 
-    def refresh(self, xmin, xmax, hmin):
+    def refresh(self, xmin, xmax, hmin, fixed_depth=None):
         self.xmin = xmin
         self.xmax = xmax
         self.hmin = hmin
@@ -243,7 +243,7 @@ class OctreeGPU(object):
             self._reinitialize_data()
 
         self._bin()
-        self._build_tree()
+        self._build_tree(fixed_depth)
 
     def _calc_cell_size_and_depth(self):
         self.cell_size = self.hmin * self.radius_scale * (1. + 1e-5)
@@ -277,7 +277,7 @@ class OctreeGPU(object):
         self.pbounds = None
         self.offsets = None
 
-    def _bin(self, ):
+    def _bin(self):
         dtype = np.float64 if self.use_double else np.float32
         fill_particle_data = self.helper.get_kernel("fill_particle_data")
         pa_gpu = self.pa.gpu
@@ -302,13 +302,7 @@ class OctreeGPU(object):
                     np.uint32(csum_nodes_next))
         return leaf_count.array[0].get()
 
-    def _refresh(self):
-        self._calc_cell_size_and_depth()
-        self._refresh()
-        self._bin()
-        self._build_tree()
-
-    def _build_tree(self):
+    def _build_tree(self, fixed_depth=None):
         num_leaves_here = 0
         n = self.pa.get_number_of_particles()
         temp_vars = {}
@@ -332,7 +326,8 @@ class OctreeGPU(object):
         pbounds_temp = [DeviceArray(cl.cltypes.uint2, 1)]
         pbounds_temp[-1].array[0].set(cl.cltypes.make_uint2(0, n))
 
-        for depth in range(1, self.max_depth):
+        loop_lim = self.max_depth if fixed_depth is None else fixed_depth
+        for depth in range(1, loop_lim):
             num_nodes = 8 * (self.num_nodes[-1] - num_leaves_here)
             if num_nodes == 0:
                 break
