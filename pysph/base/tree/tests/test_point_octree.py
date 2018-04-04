@@ -1,10 +1,11 @@
 import numpy as np
 
 from pysph.base.tree.point_octree import OctreeGPU
-from pysph.base.opencl import DeviceHelper
+from pysph.base.opencl import DeviceHelper, DeviceArray
 from pysph.base.utils import get_particle_array
 
 from pysph.base.nnps_base import NNPSParticleArrayWrapper
+from pysph.base.tests.test_nnps import NNPSTestCase
 
 import unittest
 
@@ -32,6 +33,35 @@ def _dfs_find_leaf(octree):
 
     dfs_find_leaf(octree, octree, leaf_id_count.array)
     return leaf_id_count.array.get()
+
+
+def _test_nnps(neighbor_count, pa1, pa2, pids=None, sorted=False, radius_scale=1.):
+    n1 = pa1.get_number_of_particles()
+    n2 = pa2.get_number_of_particles()
+
+    xd, yd, zd, hd = np.array(pa1.x), np.array(pa1.y), \
+                     np.array(pa1.z), np.array(pa1.h)
+    xs, ys, zs, hs = np.array(pa2.x), np.array(pa2.y), \
+                     np.array(pa2.z), np.array(pa2.h)
+
+    count = np.zeros(n1, dtype=int)
+
+    for i in range(n1):
+        for j in range(n2):
+            dist2 = (xd[i] - xs[j]) ** 2 + \
+                    (yd[i] - ys[j]) ** 2 + (zd[i] - zs[j]) ** 2
+            if dist2 < hd[i] ** 2 * radius_scale ** 2 or dist2 < hs[j] ** 2 * radius_scale ** 2:
+                count[i] += 1
+
+    if sorted:
+        pids_inv = np.zeros(n, dtype=int)
+        for i in range(n1):
+            pids_inv[pids[i]] = i
+    else:
+        pids_inv = np.arange(n1)
+
+    for i in range(n1):
+        assert (count[i] == neighbor_count[pids_inv[i]])
 
 
 def _check_children_overlap(node_xmin, node_xmax, child_offset):
@@ -115,7 +145,7 @@ class OctreeTestCase(unittest.TestCase):
             assert (l == pbound[1])
 
     def test_node_bounds(self):
-        # TODO: Add test to check overlapping
+        # TODO: Add test to check h
 
         self.octree._set_node_bounds()
         pids = self.octree.pids.array.get()
@@ -123,7 +153,6 @@ class OctreeTestCase(unittest.TestCase):
         pbounds = self.octree.pbounds.array.get()
         node_xmin = self.octree.node_xmin.array.get()
         node_xmax = self.octree.node_xmax.array.get()
-        node_hmax = self.octree.node_hmax.array.get()
 
         x = self.pa.x[pids]
         y = self.pa.y[pids]
@@ -150,3 +179,60 @@ class OctreeTestCase(unittest.TestCase):
 
     def tearDown(self):
         del self.octree
+
+
+class OctreeNNPSTestCase(NNPSTestCase):
+    def _find_domain(self, pa_idx):
+        pa = self.particles[pa_idx]
+        xmin = np.array([np.min(pa.x), np.min(pa.y), np.min(pa.z)])
+        xmax = np.array([np.max(pa.x), np.max(pa.y), np.max(pa.z)])
+        hmin = np.min(pa.h)
+        return xmin, xmax, hmin
+
+    def setUp(self):
+        super(OctreeNNPSTestCase, self).setUp()
+
+        for i in range(len(self.particles)):
+            pa = self.particles[i]
+            h = DeviceHelper(pa)
+            pa.set_device_helper(h)
+
+        self.octrees = [
+            OctreeGPU(self.particles[i], radius_scale=2.)
+            for i in range(len(self.particles))
+            ]
+
+        for i in range(len(self.particles)):
+            xmin, xmax, hmin = self._find_domain(i)
+            self.octrees[i].refresh(xmin - hmin / 2, xmax + hmin / 2, hmin)
+            self.octrees[i]._set_node_bounds()
+
+    def _test_neighbors_by_particle(self, src_index, dst_index):
+        octree_dst = self.octrees[dst_index]
+        octree_src = self.octrees[src_index]
+        nbr_cid_lengths, nbr_cids = octree_dst._find_neighbor_cids(octree_src)
+        n = self.particles[dst_index].get_number_of_particles()
+        neighbor_count = DeviceArray(np.uint32, n)
+        octree_dst._find_neighbor_lengths(nbr_cid_lengths, nbr_cids,
+                                          octree_src, neighbor_count.array)
+        _test_nnps(neighbor_count.array.get(),
+                   self.particles[dst_index],
+                   self.particles[src_index], radius_scale=2.)
+
+    def test_neighbors_aa(self):
+        self._test_neighbors_by_particle(src_index=0, dst_index=0)
+
+    def test_neighbors_ab(self):
+        self._test_neighbors_by_particle(src_index=0, dst_index=1)
+
+    def test_neighbors_ba(self):
+        self._test_neighbors_by_particle(src_index=1, dst_index=0)
+
+    def test_neighbors_bb(self):
+        self._test_neighbors_by_particle(src_index=1, dst_index=1)
+
+    def test_neighbors_cc(self):
+        self._test_neighbors_by_particle(src_index=2, dst_index=2)
+
+    def test_neighbors_dd(self):
+        self._test_neighbors_by_particle(src_index=3, dst_index=3)

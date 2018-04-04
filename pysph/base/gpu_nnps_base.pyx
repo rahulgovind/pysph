@@ -288,22 +288,22 @@ cdef class GPUNNPS(NNPSBase):
 
         # Add a small offset to the limits.
         lx, ly, lz = xmax - xmin, ymax - ymin, zmax - zmin
-        xmin -= lx * 0.01;
-        ymin -= ly * 0.01;
+        xmin -= lx * 0.01
+        ymin -= ly * 0.01
         zmin -= lz * 0.01
-        xmax += lx * 0.01;
-        ymax += ly * 0.01;
+        xmax += lx * 0.01
+        ymax += ly * 0.01
         zmax += lz * 0.01
 
         # If all of the dimensions have very small extent give it a unit size.
         _eps = 1e-12
         if (np.abs(xmax - xmin) < _eps) and (np.abs(ymax - ymin) < _eps) \
                 and (np.abs(zmax - zmin) < _eps):
-            xmin -= 0.5;
+            xmin -= 0.5
             xmax += 0.5
-            ymin -= 0.5;
+            ymin -= 0.5
             ymax += 0.5
-            zmin -= 0.5;
+            zmin -= 0.5
             zmax += 0.5
 
         # store the minimum and maximum of physical coordinates
