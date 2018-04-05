@@ -47,7 +47,7 @@ class GPUNNPSHelper(object):
 
         return arguments, src
 
-    def get_kernel(self, kernel_name, use_elwise=True, **kwargs):
+    def get_kernel(self, kernel_name, **kwargs):
         data = kernel_name, tuple(kwargs.items())
         if data in self.cache:
             return self.cache[data]

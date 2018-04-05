@@ -13,6 +13,8 @@ from pysph.base.gpu_nnps_helper import GPUNNPSHelper
 from pysph.base.opencl import DeviceArray, profile_kernel
 from pysph.base.opencl import get_context, get_queue, profile_with_name, get_queue2
 from pytools import memoize, memoize_method
+from pysph.base.opencl import get_config
+
 import sys
 
 from mako.template import Template
@@ -30,6 +32,24 @@ def get_octree_id():
 
 class IncompatibleOctreesException(Exception):
     pass
+
+
+_cache = {}
+
+
+def cache_result(cache_key):
+    global _cache
+
+    def _decorator(f):
+        def _cached_f(*args):
+            key = (cache_key, *args)
+            if key not in _cache:
+                _cache[key] = f(*args)
+            return _cache[key]
+
+        return _cached_f
+
+    return _decorator
 
 
 # def memoize(f, *args, **kwargs):
@@ -191,6 +211,7 @@ def _get_unique_cids_kernel(ctx):
         """
     )
 
+
 @profile_with_name("group_cids")
 @memoize
 def _get_cid_groups_kernel(ctx):
@@ -214,6 +235,13 @@ def _get_cid_groups_kernel(ctx):
         """
     )
 
+
+@memoize
+def get_helper(ctx, use_double):
+    return GPUNNPSHelper(ctx, "tree/point_octree.mako",
+                         use_double)
+
+
 class OctreeGPU(object):
     def __init__(self, pa, radius_scale=1.0,
                  use_double=False, leaf_size=32):
@@ -224,8 +252,7 @@ class OctreeGPU(object):
         self.ctx = get_context()
         self.queue = get_queue()
         self.sorted = False
-        self.helper = GPUNNPSHelper(self.ctx, "tree/point_octree.mako",
-                                    self.use_double)
+        self.helper = get_helper(self.ctx, self.use_double)
         if use_double:
             self.make_vec = cl.array.vec.make_double3
         else:
@@ -451,24 +478,21 @@ class OctreeGPU(object):
         return DeviceArray(dtype, int(self.unique_cid_count))
 
     def get_preamble(self):
-        @memoize
-        def _get_preamble(sorted):
-            return Template("""
-                % if sorted:
-                    #define PID(idx) (idx)
-                % else:
-                    #define PID(idx) (pids[idx])
-                % endif
-                """, disable_unicode=disable_unicode).render(sorted=self.sorted)
-
-        return _get_preamble(self.sorted)
+        if self.sorted:
+            return "#define PID(idx) (idx)"
+        else:
+            return "#define PID(idx) (pids[idx])"
 
     def tree_bottom_up(self, args, setup, leaf_operation, node_operation, output_expr):
-        @memoize
-        def _tree_bottom_up(use_double, sorted, args, setup,
+        @cache_result('_tree_bottom_up')
+        def _tree_bottom_up(ctx, use_double, sorted, args, setup,
                             leaf_operation, node_operation, output_expr):
             data_t = 'double' if use_double else 'float'
-            preamble = self.get_preamble()
+            if sorted:
+                preamble = "#define PID(idx) (idx)"
+            else:
+                preamble = "#define PID(idx) (pids[idx])"
+                
             operation = Template(
                 NODE_KERNEL_TEMPLATE % dict(setup=setup,
                                             leaf_operation=leaf_operation,
@@ -482,7 +506,7 @@ class OctreeGPU(object):
                 disable_unicode=disable_unicode
             ).render(data_t=data_t, sorted=sorted)
 
-            kernel = ElementwiseKernel(self.ctx, args, operation=operation, preamble=preamble)
+            kernel = ElementwiseKernel(ctx, args, operation=operation, preamble=preamble)
 
             def callable(octree, *args):
                 csum_nodes = octree.total_nodes
@@ -496,19 +520,24 @@ class OctreeGPU(object):
 
             return callable
 
-        return _tree_bottom_up(self.use_double, self.sorted, args, setup,
+        return _tree_bottom_up(self.ctx, self.use_double, self.sorted, args, setup,
                                leaf_operation, node_operation, output_expr)
 
-    def leaf_tree_traverse(self, args, setup, node_operation, leaf_operation, output_expr, common_operation=""):
+    def leaf_tree_traverse(self, args, setup, node_operation, leaf_operation,
+                           output_expr, common_operation=""):
         """
         Traverse this (source) octree. One thread for each leaf of destination octree.
         """
-
-        @memoize
-        def _leaf_tree_traverse(use_double, sorted, args, setup, node_operation,
+        @cache_result('_leaf_tree_traverse')
+        def _leaf_tree_traverse(ctx, use_double, sorted, args, setup, node_operation,
                                 leaf_operation, output_expr, common_operation):
             data_t = 'double' if use_double else 'float'
-            premable = self.get_preamble() + Template("""
+
+            if sorted:
+                preamble = "#define PID(idx) (idx)"
+            else:
+                preamble = "#define PID(idx) (pids[idx])"
+            premable = preamble + Template("""
                 #define IN_BOUNDS(X, MIN, MAX) ((X >= MIN) && (X < MAX))
                 #define NORM2(X, Y, Z) ((X)*(X) + (Y)*(Y) + (Z)*(Z))
                 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
@@ -573,7 +602,7 @@ class OctreeGPU(object):
                 disable_unicode=disable_unicode
             ).render(data_t=data_t, sorted=sorted)
 
-            kernel = ElementwiseKernel(self.ctx, args, operation=operation, preamble=premable)
+            kernel = ElementwiseKernel(ctx, args, operation=operation, preamble=premable)
 
             def callable(octree_src, octree_dst, *args):
                 return kernel(octree_dst.unique_cids.array[:octree_dst.unique_cid_count],
@@ -581,7 +610,8 @@ class OctreeGPU(object):
 
             return callable
 
-        return _leaf_tree_traverse(self.use_double, self.sorted, args, setup, node_operation,
+        return _leaf_tree_traverse(self.ctx, self.use_double, self.sorted, args, setup,
+                                   node_operation,
                                    leaf_operation, output_expr, common_operation)
 
     def _set_node_bounds(self):
@@ -738,7 +768,7 @@ class OctreeGPU(object):
         return neighbor_cid_count, neighbor_cids
 
     def _find_neighbor_lengths_elementwise(self, neighbor_cid_count, neighbor_cids, octree_src,
-                               neighbor_count):
+                                           neighbor_count):
         n = self.pa.get_number_of_particles()
         wgs = self.leaf_size
         pa_gpu_dst = self.pa.gpu
@@ -758,10 +788,10 @@ class OctreeGPU(object):
                              neighbor_count)
 
     def _find_neighbors_elementwise(self, neighbor_cid_count, neighbor_cids, octree_src,
-                        start_indices, neighbors):
+                                    start_indices, neighbors):
         # TODO: Extra checking needed to ensure octrees compatible
-        assert(octree_src.sorted == self.sorted)
-        assert(octree_src.leaf_size == self.leaf_size)
+        assert (octree_src.sorted == self.sorted)
+        assert (octree_src.leaf_size == self.leaf_size)
 
         n = self.pa.get_number_of_particles()
         wgs = self.leaf_size
@@ -790,7 +820,7 @@ class OctreeGPU(object):
         dtype = np.float64 if self.use_double else np.float32
 
         def find_neighbor_counts_for_partition(partition_cids, partition_size,
-                                         partition_wgs, q=None):
+                                               partition_wgs, q=None):
             find_neighbor_counts = self.helper.get_kernel('find_neighbor_counts', sorted=self.sorted,
                                                           wgs=wgs)
             find_neighbor_counts(partition_cids.array, octree_src.pids.array, self.pids.array,
@@ -822,8 +852,8 @@ class OctreeGPU(object):
     def _find_neighbors(self, neighbor_cid_count, neighbor_cids, octree_src,
                         start_indices, neighbors, use_partitions=False):
         # TODO: Extra checking needed to ensure octrees compatible
-        assert(octree_src.sorted == self.sorted)
-        assert(octree_src.leaf_size == self.leaf_size)
+        assert (octree_src.sorted == self.sorted)
+        assert (octree_src.leaf_size == self.leaf_size)
 
         wgs = self.leaf_size if self.leaf_size % 32 == 0 else \
             self.leaf_size + 32 - self.leaf_size % 32
@@ -871,7 +901,7 @@ class OctreeGPU(object):
                        self.pbounds.array, groups.array, group_count.array,
                        np.int32(group_min), np.int32(group_max))
         return groups, int(group_count.array[0].get())
-        
+
     def _sort(self):
         # Particle array needs to be aligned by caller
         if not self.sorted:
