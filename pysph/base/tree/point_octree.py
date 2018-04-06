@@ -284,7 +284,6 @@ class OctreeGPU(object):
 
         self.xmin -= diff
         self.xmax += diff
-        print(self.xmin, self.xmax)
 
         self.id = get_octree_id()
         self._calc_cell_size_and_depth()
@@ -890,7 +889,8 @@ class OctreeGPU(object):
 
             m1, n1 = self.get_leaf_size_partitions(0, wgs1)
             fraction = (n1 / int(self.unique_cid_count))
-            print('Fraction: ', fraction, self.unique_cid_count, self.pa.get_number_of_particles())
+            # print('Fraction: ', fraction, self.unique_cid_count,
+            #      self.pa.get_number_of_particles())
 
             if fraction > 0.3:
                 find_neighbors_for_partition(m1, n1, wgs1)
