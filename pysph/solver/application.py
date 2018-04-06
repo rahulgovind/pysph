@@ -688,6 +688,15 @@ class Application(object):
                   "Must be multiples of 32")
         )
 
+        # TODO: Improve instructions
+        interfaces.add_argument(
+            "--octree-nnps-partition",
+            dest="octree_use_partitions",
+            action="store_true",
+            default=False,
+            help=("Specify if partitioning should "
+                  "be used for octree NNPS")
+        )
         # Scheme options.
         if self.scheme is not None:
             scheme_options = parser.add_argument_group(
@@ -874,7 +883,8 @@ class Application(object):
                         cache=True,
                         sort_gids=options.sort_gids,
                         allow_sort=True,
-                        leaf_size=leaf_size
+                        leaf_size=leaf_size,
+                        use_partitions=options.octree_use_partitions
                     )
                 else:
                     from pysph.base.gpu_nnps import ZOrderGPUNNPS

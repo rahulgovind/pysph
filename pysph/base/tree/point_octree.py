@@ -271,8 +271,8 @@ class OctreeGPU(object):
         self.leaf_size = leaf_size
 
     def refresh(self, xmin, xmax, hmin, fixed_depth=None):
-        self.xmin = xmin
-        self.xmax = xmax
+        self.xmin = np.array(xmin)
+        self.xmax = np.array(xmax)
         self.hmin = hmin
 
         # Convert width of domain to power of 2 multiple of cell size
@@ -281,8 +281,10 @@ class OctreeGPU(object):
         new_width = cell_size * 2. ** int(np.ceil(np.log2(max_width / cell_size)))
 
         diff = (new_width - (self.xmax - self.xmin)) / 2
+
         self.xmin -= diff
         self.xmax += diff
+        print(self.xmin, self.xmax)
 
         self.id = get_octree_id()
         self._calc_cell_size_and_depth()
@@ -492,7 +494,7 @@ class OctreeGPU(object):
                 preamble = "#define PID(idx) (idx)"
             else:
                 preamble = "#define PID(idx) (pids[idx])"
-                
+
             operation = Template(
                 NODE_KERNEL_TEMPLATE % dict(setup=setup,
                                             leaf_operation=leaf_operation,
@@ -843,6 +845,7 @@ class OctreeGPU(object):
                 wgs1 = 64
 
             m1, n1 = self.get_leaf_size_partitions(0, wgs1)
+
             find_neighbor_counts_for_partition(m1, n1, min(wgs, wgs1))
             m2, n2 = self.get_leaf_size_partitions(wgs1, wgs)
             find_neighbor_counts_for_partition(m2, n2, wgs)
@@ -886,11 +889,16 @@ class OctreeGPU(object):
                 wgs1 = 64
 
             m1, n1 = self.get_leaf_size_partitions(0, wgs1)
-            find_neighbors_for_partition(m1, n1, min(wgs, wgs1))
-            m2, n2 = self.get_leaf_size_partitions(wgs1, wgs)
-            find_neighbors_for_partition(m2, n2, wgs)
-        else:
-            find_neighbors_for_partition(self.unique_cids, self.unique_cid_count, wgs)
+            fraction = (n1 / int(self.unique_cid_count))
+            print('Fraction: ', fraction, self.unique_cid_count, self.pa.get_number_of_particles())
+
+            if fraction > 0.3:
+                find_neighbors_for_partition(m1, n1, wgs1)
+                m2, n2 = self.get_leaf_size_partitions(wgs1, wgs)
+                assert(n1 + n2 == self.unique_cid_count)
+                find_neighbors_for_partition(m2, n2, wgs)
+                return
+        find_neighbors_for_partition(self.unique_cids, self.unique_cid_count, wgs)
 
     def get_leaf_size_partitions(self, group_min, group_max):
         groups = DeviceArray(np.uint32, int(self.unique_cid_count))
@@ -900,7 +908,8 @@ class OctreeGPU(object):
         get_cid_groups(self.unique_cids.array[:self.unique_cid_count],
                        self.pbounds.array, groups.array, group_count.array,
                        np.int32(group_min), np.int32(group_max))
-        return groups, int(group_count.array[0].get())
+        result = groups, int(group_count.array[0].get())
+        return result
 
     def _sort(self):
         # Particle array needs to be aligned by caller

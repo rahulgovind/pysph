@@ -626,6 +626,26 @@ class OctreeGPUNNPS2WithSortingTestCase(DictBoxSortNNPSTestCase):
         super(OctreeGPUNNPS2WithSortingTestCase, self).tearDown()
         get_config().use_double = self._orig_use_double
 
+class OctreeGPUNNPS2WithPartitioningTestCase(DictBoxSortNNPSTestCase):
+    def setUp(self):
+        NNPSTestCase.setUp(self)
+        cl = importorskip("pyopencl")
+        from pysph.base import gpu_nnps
+        ctx = cl.create_some_context(interactive=False)
+        cfg = get_config()
+        self._orig_use_double = cfg.use_double
+        cfg.use_double = False
+        self.nps = gpu_nnps.OctreeGPUNNPS2(
+            dim=3, particles=self.particles, radius_scale=2.0,
+            ctx=ctx, use_partitions=True
+        )
+
+        for pa in self.particles:
+            pa.gpu.pull()
+
+    def tearDown(self):
+        super(OctreeGPUNNPS2WithPartitioningTestCase, self).tearDown()
+        get_config().use_double = self._orig_use_double
 
 class StratifiedSFCGPUNNPSTestCase(DictBoxSortNNPSTestCase):
     """Test for Stratified SFC based OpenCL algorithm"""

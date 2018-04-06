@@ -93,7 +93,8 @@ cdef class OctreeGPUNNPS2(GPUNNPS):
             find_neighbor_lengths = octree_dst._find_neighbor_lengths_elementwise
         else:
             find_neighbor_lengths = octree_dst._find_neighbor_lengths
-            args.append(self.use_partitions)
+            # TODO: Check effect of partitioning on this function
+            # args.append(self.use_partitions)
 
         find_neighbor_lengths(
             self.neighbor_cid_counts, self.neighbor_cids, octree_src,
