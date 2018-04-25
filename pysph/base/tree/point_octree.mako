@@ -356,6 +356,8 @@
 
             barrier(CLK_LOCAL_MEM_FENCE);
 
+            // Everything this point forward is done independently
+            // by each thread.
             if (svalid) {
                 for (int j=0; j < m; j++) {
                     % if sorted:

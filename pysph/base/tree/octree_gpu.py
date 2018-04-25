@@ -9,7 +9,7 @@ cimport numpy as np
 
 from pysph.base.gpu_nnps_helper import GPUNNPSHelper
 from pysph.base.opencl import DeviceArray
-from pysph.base.opencl import get_context, get_queue, profile_with_name
+from pysph.base.opencl import get_context, get_queue, named_profile
 from pytools import memoize, memoize_method
 
 cdef int octree_gpu_counter = 0
@@ -30,7 +30,7 @@ def memoize(f, *args, **kwargs):
     return f
 
 
-@profile_with_name('particle_reordering')
+@named_profile('particle_reordering')
 @memoize
 def _get_particle_kernel(ctx):
     return GenericScanKernel(
@@ -68,7 +68,7 @@ def _get_particle_kernel(ctx):
                     """
     )
 
-@profile_with_name('set_offset')
+@named_profile('set_offset')
 @memoize
 def _get_set_offset_kernel(ctx):
     return GenericScanKernel(
@@ -83,7 +83,7 @@ def _get_set_offset_kernel(ctx):
         }"""
     )
 
-@profile_with_name('neighbor_psum')
+@named_profile('neighbor_psum')
 @memoize
 def _get_neighbor_psum_kernel(ctx):
     return GenericScanKernel(
@@ -94,7 +94,7 @@ def _get_neighbor_psum_kernel(ctx):
         output_statement=r"""neighbor_counts[i] = prev_item;"""
     )
 
-@profile_with_name('unique_cids')
+@named_profile('unique_cids')
 @memoize
 def _get_unique_cids_kernel(ctx):
     return GenericScanKernel(
@@ -112,10 +112,10 @@ def _get_unique_cids_kernel(ctx):
         """
     )
 
-cdef class OctreeGPU:
-    def __init__(self, NNPSParticleArrayWrapper pa_wrapper, radius_scale=1.0,
-                 bint use_double=False):
-        self.pa_wrapper = pa_wrapper
+class OctreeGPU(object):
+    def __init__(self, pa, radius_scale=1.0,
+                 use_double=False):
+        self.pa = pa
 
         self.radius_scale = radius_scale
         self.use_double = use_double
@@ -139,7 +139,7 @@ cdef class OctreeGPU:
 
         self.preamble = norm2
 
-    def refresh(self, np.ndarray xmin, np.ndarray xmax, double hmin):
+    def refresh(self, xmin, xmax, hmin):
         self.xmin = xmin
         self.xmax = xmax
         self.hmin = hmin
@@ -156,13 +156,12 @@ cdef class OctreeGPU:
         self._build_tree()
 
     def _calc_cell_size_and_depth(self):
-        cdef double max_width
         self.cell_size = self.hmin * self.radius_scale * (1. + 1e-5)
         max_width = max((self.xmax[i] - self.xmin[i]) for i in range(3))
         self.max_depth = int(np.ceil(np.log2(max_width / self.cell_size))) + 1
 
     def _initialize_data(self):
-        num_particles = self.pa_wrapper.get_number_of_particles()
+        num_particles = self.pa.get_number_of_particles()
         self.pids = DeviceArray(np.uint32, n=num_particles)
         self.pid_keys = DeviceArray(np.uint64, n=num_particles)
         self.levels = DeviceArray(np.uint8, n=num_particles)
@@ -183,7 +182,7 @@ cdef class OctreeGPU:
         self.neighbors_stored = {}
 
     def _reinitialize_data(self):
-        num_particles = self.pa_wrapper.get_number_of_particles()
+        num_particles = self.pa.get_number_of_particles()
         self.pids.resize(num_particles)
         self.pid_keys.resize(num_particles)
         self.levels.resize(num_particles)
@@ -203,10 +202,10 @@ cdef class OctreeGPU:
         self.neighbors = {}
         self.neighbors_stored = {}
 
-    def _bin(self, ):
+    def _bin(self):
         dtype = np.float64 if self.use_double else np.float32
         fill_particle_data = self.helper.get_kernel("fill_particle_data")
-        pa_gpu = self.pa_wrapper.pa.gpu
+        pa_gpu = self.pa.gpu
         fill_particle_data(pa_gpu.x, pa_gpu.y, pa_gpu.z, pa_gpu.h,
                            dtype(self.cell_size),
                            self.make_vec(self.xmin[0], self.xmin[1], self.xmin[2]),
@@ -221,7 +220,8 @@ cdef class OctreeGPU:
         # Update particle-related data of children
         set_node_data = self.helper.get_kernel("set_node_data")
         set_node_data(offsets_prev.array, pbounds_prev.array, offsets.array, pbounds.array,
-                      seg_flag.array, octants.array, np.uint32(csum_nodes))
+                      seg_flag.array, octants.array, np.uint32(csum_nodes),
+                      np.uint32(self.pa.get_number_of_particles()))
 
         # Set children offsets
         leaf_count = DeviceArray(np.uint32, 1)
@@ -237,11 +237,11 @@ cdef class OctreeGPU:
         self._build_tree()
 
     def _build_tree(self):
-        cdef int num_leaves_here = 0
-        cdef int n = self.pa_wrapper.get_number_of_particles()
-        cdef dict temp_vars = {}
-        cdef int csum_nodes_prev = 0
-        cdef int csum_nodes = 1
+        num_leaves_here = 0
+        n = self.pa.get_number_of_particles()
+        temp_vars = {}
+        csum_nodes_prev = 0
+        csum_nodes = 1
 
         self.num_nodes = [1]
 
@@ -295,25 +295,25 @@ cdef class OctreeGPU:
         self.unique_cid_count = uniq_count.array[0].get()
         return temp_vars, octants, pbounds_temp, offsets_temp, num_leaves_here
 
-    def create_temp_vars(self, dict temp_vars):
-        cdef int n = self.pa_wrapper.get_number_of_particles()
+    def create_temp_vars(self, temp_vars):
+        n = self.pa.get_number_of_particles()
         temp_vars['pids'] = DeviceArray(np.uint32, n)
         temp_vars['pid_keys'] = DeviceArray(np.uint64, n)
         temp_vars['levels'] = DeviceArray(np.uint8, n)
         temp_vars['cids'] = DeviceArray(np.uint32, n)
 
-    def clean_temp_vars(self, dict temp_vars):
+    def clean_temp_vars(self, temp_vars):
         for k in temp_vars.iterkeys():
             del temp_vars[k]
 
-    def exchange_temp_vars(self, dict temp_vars):
+    def exchange_temp_vars(self, temp_vars):
         for k in temp_vars.iterkeys():
             t = temp_vars[k]
             temp_vars[k] = getattr(self, k)
             setattr(self, k, t)
 
     def _reorder_particles(self, depth, octants, offsets_parent, pbounds_parent, seg_flag, csum_nodes_prev,
-                           dict temp_vars):
+                           temp_vars):
         rshift = np.uint8(3 * (self.max_depth - depth - 1))
         mask = np.uint64(7 << rshift)
 
@@ -364,9 +364,9 @@ cdef class OctreeGPU:
             self.sorted = True
 
     def _nnps_preprocess(self, octree_dst):
-        cdef int n = self.pa_wrapper.get_number_of_particles()
-        pa_src = self.pa_wrapper.pa.gpu
-        pa_dst = octree_dst.pa_wrapper.pa.gpu
+        n = self.pa.get_number_of_particles()
+        pa_src = self.pa.gpu
+        pa_dst = octree_dst.pa.gpu
         dst_id = octree_dst.id
 
         self.neighbour_cids[dst_id] = DeviceArray(np.int32, 27 * self.unique_cid_count)
@@ -389,12 +389,12 @@ cdef class OctreeGPU:
         self.neighbor_offsets[dst_id] = DeviceArray(np.uint32, n=(n + 1))
 
 
-    cpdef _store_neighbour_counts(self, OctreeGPU octree_dst):
-        cdef int n_src = self.pa_wrapper.get_number_of_particles()
-        cdef int n_dst = octree_dst.pa_wrapper.get_number_of_particles()
+    cpdef _store_neighbour_counts(self, octree_dst):
+        n_src = self.pa.get_number_of_particles()
+        n_dst = octree_dst.pa.get_number_of_particles()
 
-        pa_gpu = self.pa_wrapper.pa.gpu
-        pa_dst = octree_dst.pa_wrapper.pa.gpu
+        pa_gpu = self.pa.gpu
+        pa_dst = octree_dst.pa.gpu
         dst_id = octree_dst.id
 
         store_neighbor_counts = self.helper.get_kernel('store_neighbor_counts', sorted=self.sorted)
@@ -416,7 +416,7 @@ cdef class OctreeGPU:
 
 
     def _prefix_sum_neighbor_counts(self, octree_dst):
-        cdef int n = self.pa_wrapper.get_number_of_particles()
+        n = self.pa.get_number_of_particles()
         dst_id = octree_dst.id
         copy_kernel = self.helper.get_kernel('copy_int')
         copy_kernel(self.neighbor_counts[dst_id].array,
@@ -429,9 +429,9 @@ cdef class OctreeGPU:
         self.neighbors[dst_id] = DeviceArray(np.int32, n=total_neighbor_count_src)
 
     def _store_neighbours(self, octree_dst):
-        cdef int n = self.pa_wrapper.get_number_of_particles()
-        pa_gpu = self.pa_wrapper.pa.gpu
-        pa_dst = octree_dst.pa_wrapper.pa.gpu
+        n = self.pa.get_number_of_particles()
+        pa_gpu = self.pa.gpu
+        pa_dst = octree_dst.pa.gpu
         dst_id = octree_dst.id
 
         store_neighbors = self.helper.get_kernel('store_neighbors', sorted=self.sorted)

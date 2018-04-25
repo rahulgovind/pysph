@@ -6,11 +6,18 @@ import sys
 from pysph.base.opencl import profile_kernel, get_elwise_kernel
 
 
-
-
-
 class GPUNNPSHelper(object):
-    def __init__(self, ctx, tpl_filename, use_double=False):
+    def __init__(self, ctx, tpl_filename, use_double=False, c_type=None):
+        """
+
+        Parameters
+        ----------
+        ctx
+        tpl_filename
+        use_double
+        c_type:
+            c_type to use. Overrides use_double
+        """
         disable_unicode = False if sys.version_info.major > 2 else True
         self.src_tpl = Template(
             filename=os.path.join(
@@ -20,6 +27,9 @@ class GPUNNPSHelper(object):
         )
 
         self.data_t = "double" if use_double else "float"
+
+        if c_type is not None:
+            self.data_t = c_type
 
         helper_tpl = Template(
             filename=os.path.join(

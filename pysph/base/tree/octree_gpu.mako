@@ -114,7 +114,7 @@
     int *offsets_prev, uint2 *pbounds_prev,
     int *offsets, uint2 *pbounds,
     char *seg_flag, uint8 *octant_vector,
-    uint csum_nodes
+    uint csum_nodes, uint N
 </%def>
 
 <%def name="set_node_data_src()", cached="True">
@@ -135,7 +135,9 @@
             % else:
                 pbounds[child_offset + ${i}] = (uint2)(pbound_here.s0 + octv[${i - 1}],
                                                        pbound_here.s0 + octv[${i}]);
-                seg_flag[pbound_here.s0 + octv[${i - 1}]] = 1;
+                if (pbound_here.s0 + octv[${i - 1}] < N) {
+                    seg_flag[pbound_here.s0 + octv[${i - 1}]] = 1;
+                }
             % endif
         % endfor
     } else {

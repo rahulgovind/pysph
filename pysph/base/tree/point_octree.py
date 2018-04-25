@@ -1,59 +1,27 @@
 import pyopencl as cl
 import pyopencl.array
-import pyopencl.algorithm
 import pyopencl.cltypes
 from pyopencl.elementwise import ElementwiseKernel
 from pyopencl.scan import GenericScanKernel
 
 import numpy as np
 
-import numpy as np
-
 from pysph.base.gpu_nnps_helper import GPUNNPSHelper
 from pysph.base.opencl import DeviceArray, profile_kernel
-from pysph.base.opencl import get_context, get_queue, profile_with_name, get_queue2
-from pytools import memoize, memoize_method
-from pysph.base.opencl import get_config
+from pysph.base.opencl import get_context, get_queue, named_profile, get_queue2
+from pytools import memoize
 
 import sys
 
 from mako.template import Template
+from pysph.base.tree.helpers import cache_result, ParticleArrayWrapper, ctype_to_dtype
 
-octree_gpu_counter = 0
 disable_unicode = False if sys.version_info.major > 2 else True
-
-
-def get_octree_id():
-    global octree_gpu_counter
-    t = octree_gpu_counter
-    octree_gpu_counter += 1
-    return t
 
 
 class IncompatibleOctreesException(Exception):
     pass
 
-
-_cache = {}
-
-
-def cache_result(cache_key):
-    global _cache
-
-    def _decorator(f):
-        def _cached_f(*args):
-            key = (cache_key, *args)
-            if key not in _cache:
-                _cache[key] = f(*args)
-            return _cache[key]
-
-        return _cached_f
-
-    return _decorator
-
-
-# def memoize(f, *args, **kwargs):
-#    return f
 
 NODE_KERNEL_TEMPLATE = r"""
 uint node_idx = i;
@@ -132,7 +100,7 @@ DFS_TEMPLATE = r"""
 """
 
 
-@profile_with_name('particle_reordering')
+@named_profile('particle_reordering')
 @memoize
 def _get_particle_kernel(ctx):
     # TODO: Combine with node kernel
@@ -165,7 +133,7 @@ def _get_particle_kernel(ctx):
     )
 
 
-@profile_with_name('set_offset')
+@named_profile('set_offset')
 @memoize
 def _get_set_offset_kernel(ctx, leaf_size):
     return GenericScanKernel(
@@ -181,7 +149,7 @@ def _get_set_offset_kernel(ctx, leaf_size):
     )
 
 
-@profile_with_name('neighbor_psum')
+@named_profile('neighbor_psum')
 @memoize
 def _get_neighbor_psum_kernel(ctx):
     return GenericScanKernel(
@@ -193,7 +161,7 @@ def _get_neighbor_psum_kernel(ctx):
     )
 
 
-@profile_with_name('unique_cids')
+@named_profile('unique_cids')
 @memoize
 def _get_unique_cids_kernel(ctx):
     return GenericScanKernel(
@@ -212,7 +180,7 @@ def _get_unique_cids_kernel(ctx):
     )
 
 
-@profile_with_name("group_cids")
+@named_profile("group_cids")
 @memoize
 def _get_cid_groups_kernel(ctx):
     return GenericScanKernel(
@@ -237,33 +205,55 @@ def _get_cid_groups_kernel(ctx):
 
 
 @memoize
-def get_helper(ctx, use_double):
+def get_helper(ctx, c_type):
+    # ctx and c_type are the only parameters that
+    # change here
     return GPUNNPSHelper(ctx, "tree/point_octree.mako",
-                         use_double)
+                         c_type=c_type)
+
+
+def get_dtype_type(use_double):
+    if use_double:
+        return np.float64
+    else:
+        return np.float32
+
+
+def get_dtype_str(use_double):
+    if use_double:
+        return 'double'
+    else:
+        return 'float'
 
 
 class OctreeGPU(object):
     def __init__(self, pa, radius_scale=1.0,
-                 use_double=False, leaf_size=32):
-        self.pa = pa
+                 use_double=False, leaf_size=32, c_type='float'):
+        # self.pa = pa
+        self.c_type = c_type
+        self.c_type_src = 'double' if use_double else 'float'
+        self.pa = ParticleArrayWrapper(pa, self.c_type_src,
+                                       self.c_type)
 
         self.radius_scale = radius_scale
         self.use_double = use_double
         self.ctx = get_context()
         self.queue = get_queue()
         self.sorted = False
-        self.helper = get_helper(self.ctx, self.use_double)
-        if use_double:
-            self.make_vec = cl.array.vec.make_double3
-        else:
+        self.helper = get_helper(self.ctx, self.c_type)
+
+        if c_type == 'half':
+            self.makeo_vec = cl.array.vec.make_half3
+        elif c_type == 'float':
             self.make_vec = cl.array.vec.make_float3
+        elif c_type == 'double':
+            self.make_vec = cl.array.vec.make_double3
 
         self.initialized = False
 
-        self.id = get_octree_id()
         norm2 = \
             """
-            #define NORM2(X, Y, Z) ((X)*(X) + (Y)*(Y) + (Z)*(Z))
+            #define NORM2(X, Y, Z) ((oX)*(X) + (Y)*(Y) + (Z)*(Z))
             """
 
         self.preamble = norm2
@@ -271,6 +261,7 @@ class OctreeGPU(object):
         self.leaf_size = leaf_size
 
     def refresh(self, xmin, xmax, hmin, fixed_depth=None):
+        self.pa.sync()
         self.xmin = np.array(xmin)
         self.xmax = np.array(xmax)
         self.hmin = hmin
@@ -285,7 +276,6 @@ class OctreeGPU(object):
         self.xmin -= diff
         self.xmax += diff
 
-        self.id = get_octree_id()
         self._calc_cell_size_and_depth()
 
         if not self.initialized:
@@ -307,7 +297,6 @@ class OctreeGPU(object):
         num_particles = self.pa.get_number_of_particles()
         self.pids = DeviceArray(np.uint32, n=num_particles)
         self.pid_keys = DeviceArray(np.uint64, n=num_particles)
-        dtype = np.float64 if self.use_double else np.float32
         self.cids = DeviceArray(np.uint32, n=num_particles)
         self.cids.fill(0)
 
@@ -320,7 +309,6 @@ class OctreeGPU(object):
         num_particles = self.pa.get_number_of_particles()
         self.pids.resize(num_particles)
         self.pid_keys.resize(num_particles)
-        dtype = np.float64 if self.use_double else np.float32
         self.cids.resize(num_particles)
         self.cids.fill(0)
 
@@ -329,9 +317,10 @@ class OctreeGPU(object):
         self.offsets = None
 
     def _bin(self):
-        dtype = np.float64 if self.use_double else np.float32
+        dtype = ctype_to_dtype(self.c_type)
         fill_particle_data = self.helper.get_kernel("fill_particle_data")
         pa_gpu = self.pa.gpu
+        # print('pa_gpu.x', pa_gpu.is_copy)
         fill_particle_data(pa_gpu.x, pa_gpu.y, pa_gpu.z,
                            dtype(self.cell_size),
                            self.make_vec(self.xmin[0], self.xmin[1], self.xmin[2]),
@@ -339,7 +328,7 @@ class OctreeGPU(object):
 
     def _update_node_data(self, offsets_prev, pbounds_prev, offsets, pbounds, seg_flag, octants,
                           csum_nodes, csum_nodes_next, n):
-        """Update node data. Return number of children which are leaves."""
+        """Update node data and return number of children which are leaves."""
 
         # Update particle-related data of children
         set_node_data = self.helper.get_kernel("set_node_data")
@@ -354,6 +343,8 @@ class OctreeGPU(object):
         return leaf_count.array[0].get()
 
     def _build_tree(self, fixed_depth=None):
+        """Build octree
+        """
         num_leaves_here = 0
         n = self.pa.get_number_of_particles()
         temp_vars = {}
@@ -486,9 +477,9 @@ class OctreeGPU(object):
 
     def tree_bottom_up(self, args, setup, leaf_operation, node_operation, output_expr):
         @cache_result('_tree_bottom_up')
-        def _tree_bottom_up(ctx, use_double, sorted, args, setup,
+        def _tree_bottom_up(ctx, data_t, sorted, args, setup,
                             leaf_operation, node_operation, output_expr):
-            data_t = 'double' if use_double else 'float'
+
             if sorted:
                 preamble = "#define PID(idx) (idx)"
             else:
@@ -521,7 +512,7 @@ class OctreeGPU(object):
 
             return callable
 
-        return _tree_bottom_up(self.ctx, self.use_double, self.sorted, args, setup,
+        return _tree_bottom_up(self.ctx, self.c_type, self.sorted, args, setup,
                                leaf_operation, node_operation, output_expr)
 
     def leaf_tree_traverse(self, args, setup, node_operation, leaf_operation,
@@ -529,11 +520,10 @@ class OctreeGPU(object):
         """
         Traverse this (source) octree. One thread for each leaf of destination octree.
         """
-        @cache_result('_leaf_tree_traverse')
-        def _leaf_tree_traverse(ctx, use_double, sorted, args, setup, node_operation,
-                                leaf_operation, output_expr, common_operation):
-            data_t = 'double' if use_double else 'float'
 
+        @cache_result('_leaf_tree_traverse')
+        def _leaf_tree_traverse(ctx, data_t, sorted, args, setup, node_operation,
+                                leaf_operation, output_expr, common_operation):
             if sorted:
                 preamble = "#define PID(idx) (idx)"
             else:
@@ -611,13 +601,18 @@ class OctreeGPU(object):
 
             return callable
 
-        return _leaf_tree_traverse(self.ctx, self.use_double, self.sorted, args, setup,
+        return _leaf_tree_traverse(self.ctx, self.c_type, self.sorted, args, setup,
                                    node_operation,
                                    leaf_operation, output_expr, common_operation)
 
     def _set_node_bounds(self):
-        data_t3 = cl.cltypes.double3 if self.use_double else cl.cltypes.float3
-        data_t = cl.cltypes.double if self.use_double else cl.cltypes.float
+        if self.c_type == 'half':
+            data_t3 = cl.cltypes.half3
+        elif self.c_type == 'float':
+            data_t3 = cl.cltypes.float3
+        else:
+            data_t3 = cl.cltypes.double3
+        data_t = self.c_type
 
         self.node_xmin = self.allocate_node_prop(data_t3)
         self.node_xmax = self.allocate_node_prop(data_t3)
@@ -663,7 +658,7 @@ class OctreeGPU(object):
         )
         set_node_bounds = profile_kernel(set_node_bounds, 'set_node_bounds')
         pa_gpu = self.pa.gpu
-        dtype = np.float64 if self.use_double else np.float32
+        dtype = ctype_to_dtype(self.c_type)
         set_node_bounds(self, self.pids.array, pa_gpu.x, pa_gpu.y, pa_gpu.z, pa_gpu.h,
                         dtype(self.radius_scale),
                         self.node_xmin.array, self.node_xmax.array, self.node_hmax.array)
@@ -730,6 +725,16 @@ class OctreeGPU(object):
         return callable
 
     def _find_neighbor_cids(self, octree_src):
+        """
+
+        Parameters
+        ----------
+        octree_src
+
+        Returns
+        -------
+
+        """
         neighbor_cid_count = DeviceArray(np.uint32, self.unique_cid_count + 1)
         # pbounds of src
         find_neighbor_cid_counts = self._leaf_neighbor_operation(
@@ -770,11 +775,22 @@ class OctreeGPU(object):
 
     def _find_neighbor_lengths_elementwise(self, neighbor_cid_count, neighbor_cids, octree_src,
                                            neighbor_count):
-        n = self.pa.get_number_of_particles()
-        wgs = self.leaf_size
+        """
+
+        Parameters
+        ----------
+        neighbor_cid_count
+        neighbor_cids
+        octree_src
+        neighbor_count
+
+        Returns
+        -------
+
+        """
         pa_gpu_dst = self.pa.gpu
         pa_gpu_src = octree_src.pa.gpu
-        dtype = np.float64 if self.use_double else np.float32
+        dtype = ctype_to_dtype(self.c_type)
 
         find_neighbor_counts = self.helper.get_kernel('find_neighbor_counts_elementwise',
                                                       sorted=self.sorted)
@@ -798,7 +814,8 @@ class OctreeGPU(object):
         wgs = self.leaf_size
         pa_gpu_dst = self.pa.gpu
         pa_gpu_src = octree_src.pa.gpu
-        dtype = np.float64 if self.use_double else np.float32
+
+        dtype = ctype_to_dtype(self.c_type)
 
         find_neighbors = self.helper.get_kernel('find_neighbors_elementwise', sorted=self.sorted)
         find_neighbors(self.unique_cids_map.array, octree_src.pids.array, self.pids.array,
@@ -818,7 +835,7 @@ class OctreeGPU(object):
         wgs = self.leaf_size
         pa_gpu_dst = self.pa.gpu
         pa_gpu_src = octree_src.pa.gpu
-        dtype = np.float64 if self.use_double else np.float32
+        dtype = ctype_to_dtype(self.c_type)
 
         def find_neighbor_counts_for_partition(partition_cids, partition_size,
                                                partition_wgs, q=None):
@@ -861,7 +878,7 @@ class OctreeGPU(object):
             self.leaf_size + 32 - self.leaf_size % 32
         pa_gpu_dst = self.pa.gpu
         pa_gpu_src = octree_src.pa.gpu
-        dtype = np.float64 if self.use_double else np.float32
+        dtype = ctype_to_dtype(self.c_type)
 
         def find_neighbors_for_partition(partition_cids, partition_size,
                                          partition_wgs, q=None):
@@ -895,12 +912,29 @@ class OctreeGPU(object):
             if fraction > 0.3:
                 find_neighbors_for_partition(m1, n1, wgs1)
                 m2, n2 = self.get_leaf_size_partitions(wgs1, wgs)
-                assert(n1 + n2 == self.unique_cid_count)
+                assert (n1 + n2 == self.unique_cid_count)
                 find_neighbors_for_partition(m2, n2, wgs)
                 return
         find_neighbors_for_partition(self.unique_cids, self.unique_cid_count, wgs)
 
     def get_leaf_size_partitions(self, group_min, group_max):
+        """Partition leaves based on leaf size
+
+        Parameters
+        ----------
+        group_min
+            Minimum leaf size
+        group_max
+            Maximum leaf size
+        Returns
+        -------
+        groups : DeviceArray
+            An array which contains the cell ids of leaves
+            with leaf size > group_min and leaf size <= group_max
+        group_count : int
+            The number of leaves which satisfy the given condition
+            on the leaf size
+        """
         groups = DeviceArray(np.uint32, int(self.unique_cid_count))
         group_count = DeviceArray(np.uint32, 1)
 
@@ -911,7 +945,51 @@ class OctreeGPU(object):
         result = groups, int(group_count.array[0].get())
         return result
 
+    def check_nnps_compatibility(self, octree):
+        """Check if octree types and parameters are compatible for NNPS
+
+        Two octrees must satisfy a few conditions so that NNPS can be performed
+        on one octree using the other as reference. In this case, the following
+        conditions must be satisfied -
+
+        1) Currently both should be instances of point_octree.OctreeGPU
+        2) Both must have the same sortedness
+
+        Parameters
+        ----------
+        octree
+
+        Returns
+        -------
+        bool
+            True if octrees are compatible, False otherwise
+        """
+        pass
+
     def _sort(self):
-        # Particle array needs to be aligned by caller
+        """Set octree as being sorted
+
+        The particle array needs to be aligned by the caller!
+        """
         if not self.sorted:
+            self.pa.force_sync()
             self.sorted = 1
+
+            # def sort(self):
+            #     """Sort the octree
+            #
+            #     Set the octree as being sorted (if it isn't already) and align particles
+            #     based on this order
+            #
+            #     Returns
+            #     -------
+            #     bool
+            #         True if octree was successfully sorted
+            #         False if it was already sorted or if it could not be sorted
+            #     """
+            #     if not self.sorted:
+            #         self.pa.gpu.align(self.pids.array)
+            #         self._sort()
+            #         return True
+            #
+            #     return False

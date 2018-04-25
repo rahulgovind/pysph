@@ -152,7 +152,7 @@ def profile_kernel(kernel, name):
         return kernel
 
 
-def profile_with_name(name):
+def named_profile(name):
     def _decorator(f):
         if name is None:
             n = f.__name__
