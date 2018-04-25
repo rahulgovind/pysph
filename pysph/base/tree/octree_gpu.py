@@ -130,7 +130,7 @@ class OctreeGPU(object):
         self.initialized = False
 
         self.id = get_octree_id()
-        cdef str norm2 = \
+        norm2 = \
             """
             #define NORM2(X, Y, Z) ((X)*(X) + (Y)*(Y) + (Z)*(Z))
             """
@@ -338,8 +338,8 @@ class OctreeGPU(object):
         self.exchange_temp_vars(temp_vars)
 
     def _compress_layers(self, offsets_temp, pbounds_temp):
-        cdef int curr_offset = 0
-        cdef int total_nodes = 0
+        curr_offset = 0
+        total_nodes = 0
 
         for i in range(self.depth + 1):
             total_nodes += self.num_nodes[i]
