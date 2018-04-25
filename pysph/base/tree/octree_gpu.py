@@ -5,18 +5,16 @@ import pyopencl.cltypes
 from pyopencl.scan import GenericScanKernel
 
 import numpy as np
-cimport numpy as np
 
 from pysph.base.gpu_nnps_helper import GPUNNPSHelper
 from pysph.base.opencl import DeviceArray
 from pysph.base.opencl import get_context, get_queue, named_profile
 from pytools import memoize, memoize_method
 
-cdef int octree_gpu_counter = 0
+octree_gpu_counter = 0
 
-cdef get_octree_id():
+def get_octree_id():
     global octree_gpu_counter
-    cdef int t
     t = octree_gpu_counter
     octree_gpu_counter += 1
     return t

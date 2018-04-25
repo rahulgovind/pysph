@@ -20,10 +20,10 @@ def get_copy_kernel(ctx, dtype1, dtype2):
             data_t2=dtype2
         ),
         operation="""
-        x2[i] = %(data_t2)s(x1[i]);
-        y2[i] = %(data_t2)s(y1[i]);
-        z2[i] = %(data_t2)s(z1[i]);
-        h2[i] = %(data_t2)s(h1[i]);
+        x2[i] = (%(data_t2)s)x1[i];
+        y2[i] = (%(data_t2)s)y1[i];
+        z2[i] = (%(data_t2)s)z1[i];
+        h2[i] = (%(data_t2)s)h1[i];
         """ % dict(
             data_t2=dtype2
         )
