@@ -387,7 +387,7 @@ class OctreeGPU(object):
         self.neighbor_offsets[dst_id] = DeviceArray(np.uint32, n=(n + 1))
 
 
-    cpdef _store_neighbour_counts(self, octree_dst):
+    def _store_neighbour_counts(self, octree_dst):
         n_src = self.pa.get_number_of_particles()
         n_dst = octree_dst.pa.get_number_of_particles()
 
