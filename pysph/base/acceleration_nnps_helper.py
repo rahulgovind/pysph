@@ -50,12 +50,10 @@ NNPS_TEMPLATE = r"""
     local ${data_t} zs[${wgs}];
     local ${data_t} hs[${wgs}];
     % for var, type in zip(vars, types):
-        // local ${type} ${var}[${wgs}];
-        __global ${type}* ${var} = ${var}_global;
+        local ${type} ${var}[${wgs}];
     % endfor
     ${data_t} r2;
 
-    __global int *_neighbors = neighbors + start_indices[d_idx];
     ${setup}
     while (offset_src < offset_lim) {
         cid_src = neighbor_cids[offset_src];
@@ -77,7 +75,7 @@ NNPS_TEMPLATE = r"""
                 hs[lid] = hsrc[pid_src];
 
                 % for var in vars:
-                    // ${var}[lid] = ${var}_global[pid_src];
+                    ${var}[lid] = ${var}_global[pid_src];
                 % endfor
             }
             m = min(pbound_here2.s1, pbound_here2.s0 + ${wgs}) - pbound_here2.s0;
@@ -88,11 +86,7 @@ NNPS_TEMPLATE = r"""
             // by each thread.
             if (svalid) {
                 for (int j=0; j < m; j++) {
-                    %if sorted:
-                        int s_idx = pbound_here2.s0 + j;
-                    %else:
-                        int s_idx = pids_src[pbound_here2.s0 + j];
-                    %endif
+                    int s_idx = j;
                     ${data_t} dist2 = NORM2(xs[j] - xd,
                                             ys[j] - yd,
                                             zs[j] - zd);
@@ -100,7 +94,6 @@ NNPS_TEMPLATE = r"""
                     r2 = MAX(hs[j], hd) * radius_scale;
                     r2 *= r2;
                     if (dist2 < r2) {
-                        _neighbors[cnt++] = s_idx;
                         ${loop_code}
                     }
                 }
@@ -109,9 +102,7 @@ NNPS_TEMPLATE = r"""
             barrier(CLK_LOCAL_MEM_FENCE);
         }
     }
-    if (svalid) {
-        neighbor_counts[d_idx] = cnt;
-    }
+
 """
 
 NNPS_ARGS_TEMPLATE = """
@@ -123,9 +114,7 @@ NNPS_ARGS_TEMPLATE = """
     __global %(data_t)s *xdst, __global %(data_t)s *ydst,
     __global %(data_t)s *zdst, __global %(data_t)s *hdst,
     %(data_t)s radius_scale,
-    __global int *neighbor_cid_offset, __global int *neighbor_cids,
-    __global int *start_indices,
-    __global int *neighbor_counts, __global int *neighbors
+    __global int *neighbor_cid_offset, __global int *neighbor_cids
     """
 
 

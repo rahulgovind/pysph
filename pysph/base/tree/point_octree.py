@@ -273,7 +273,7 @@ class OctreeGPU(object):
         # (Optimal width for cells)
         cell_size = self.hmin * self.radius_scale * (1. + 1e-5)
         max_width = np.max(self.xmax - self.xmin)
-        print("max width:", max_width)
+
         new_width = cell_size * \
                     2. ** int(np.ceil(np.log2(max_width / cell_size)))
 
@@ -899,8 +899,7 @@ class OctreeGPU(object):
                                  gs=(partition_wgs * partition_size,),
                                  ls=(partition_wgs,),
                                  queue=(get_queue() if q is None else q))
-            print("GS LS", partition_wgs * partition_size, partition_wgs)
-            print('Neighbor counts', neighbor_count.get()[:64])
+
         if use_partitions and wgs > 32:
             if wgs < 128:
                 wgs1 = 32
@@ -1042,7 +1041,5 @@ class OctreeGPU(object):
         The particle array needs to be aligned by the caller!
         """
         if not self.sorted:
-            print("Sorting")
-            print(len(np.unique(self.pids.array.get())) == len(self.pids.array))
             self.pa.force_sync()
             self.sorted = 1

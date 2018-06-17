@@ -262,7 +262,6 @@ cdef class GPUNNPS(NNPSBase):
         zmin = self.dtype_max
 
         for pa_wrapper in pa_wrappers:
-            print("Updating min/max")
             x = pa_wrapper.pa.gpu.get_device_array('x')
             y = pa_wrapper.pa.gpu.get_device_array('y')
             z = pa_wrapper.pa.gpu.get_device_array('z')

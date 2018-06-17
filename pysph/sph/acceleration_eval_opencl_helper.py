@@ -148,42 +148,19 @@ class OpenCLAccelerationEval(object):
         args[1] = (n,)
         args[3:] = [x() for x in args[3:]]
 
-        def _arr(buf):
-            a = np.zeros(5)
-            cl.enqueue_copy(get_queue(), a, buf)
-            print(a)
-            return a
         if info.get('loop'):
             if get_config().use_local_memory:
                 nnps.set_context(info['src_idx'], info['dst_idx'])
-                cache = nnps.current_cache
-                cache.get_neighbors_gpu()
-
                 nnps_args, gs_ls = self.nnps.get_kernel_args()
                 self._queue.finish()
 
                 args[1] = gs_ls[0]
                 args[2] = gs_ls[1]
-                print("GS LS", gs_ls)
-                args = args + extra_args + nnps_args
-                neighbor_counts = DeviceArray(np.int32, n)
-                _nnps_neighbors = cache._neighbors_gpu.array.get()
 
-                neighbors = DeviceArray(np.int32, len(_nnps_neighbors))
-                args = args + [cache._start_idx_gpu.array.data,
-                               neighbor_counts.array.data,
-                               neighbors.array.data]
+                args = args + extra_args + nnps_args
+
                 call(*args)
                 self._queue.finish()
-
-                print('Neighbor Counts Equal',
-                      np.all(neighbor_counts.array.get() == cache._nbr_lengths_gpu.array.get())
-                      )
-                print('Neighbors Equal',
-                      np.all(neighbors.array.get() == _nnps_neighbors)
-                      )
-                # for i in range(33, 36):
-                #     print('Array %d' % i, _arr(args[i]))
             else:
                 nnps.set_context(info['src_idx'], info['dst_idx'])
                 cache = nnps.current_cache
@@ -196,8 +173,6 @@ class OpenCLAccelerationEval(object):
                 ] + extra_args
                 call(*args)
                 self._queue.finish()
-                # for i in range(33, 36):
-                #     print('Array %d' % i, _arr(args[i]))
         else:
             call(*(args + extra_args))
         self._queue.finish()
