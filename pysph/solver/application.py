@@ -406,6 +406,14 @@ class Application(object):
             default=False,
             help="Use OpenCL to run the simulation.")
 
+        # --use-local-memory
+        parser.add_argument(
+            "--use-local-memory",
+            action="store_true",
+            dest="with_local_memory",
+            default=False,
+            help="Use local memory with OpenCL"
+        )
         # --profile
         parser.add_argument(
             "--profile",
@@ -685,7 +693,7 @@ class Application(object):
         interfaces.add_argument(
             "--octree-leaf-size",
             dest="octree_leaf_size",
-            default=64,
+            default=32,
             help=("Specify leaf size of octree. "
                   "Must be multiples of 32")
         )
@@ -848,6 +856,8 @@ class Application(object):
             get_config().set_omp_schedule(options.omp_schedule)
         if options.with_opencl:
             get_config().use_opencl = True
+        if options.with_local_memory:
+            get_config().use_local_memory = True
         if options.use_double:
             get_config().use_double = options.use_double
         if options.profile:
