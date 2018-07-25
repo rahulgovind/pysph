@@ -107,6 +107,119 @@ cpdef py_${name}(${py_arg_sig}):
     return c_${name}(${py_args})
 '''
 
+scan_cy_template = '''
+from cython.parallel import parallel, prange, threadid
+from libc.stdlib cimport abort, malloc, free
+cimport openmp
+cimport numpy as np
+
+
+cpdef int get_number_of_threads():
+    % if openmp:
+        cdef int i, n
+        with nogil, parallel():
+            for i in prange(1):
+                n = openmp.omp_get_num_threads()
+        return n
+    % else:
+        return 1
+    % endif
+
+cdef int gcd(int a, int b):
+    while b != 0:
+        a, b = b, a % b
+    return a
+
+cdef int get_stride(int sz, int itemsize):
+    return sz / gcd(sz, itemsize)
+
+
+cdef void c_${name}(${c_arg_sig}):
+    cdef int i, n_thread, tid, stride, sz
+
+    n_thread = get_number_of_threads()
+    sz = sizeof(${type})
+
+    # This striding is to do 64 bit alignment to prevent false sharing.
+    stride = get_stride(64, sz)
+    cdef ${type}* buffer
+    cdef ${type}* map_output
+
+    buffer = <${type}*> malloc(n_thread * stride * sz)
+    map_output = <${type}*> malloc(SIZE * sz)
+
+    if buffer == NULL:
+        abort()
+
+    cdef int buffer_idx, start, end
+    cdef ${type} a, b, temp
+    cdef int chunksize = (SIZE + n_thread - 1) // n_thread
+
+    # Pass 1
+    with nogil, parallel():
+        tid = threadid()
+        buffer_idx = tid * stride
+
+        start = tid * chunksize
+        end = min((tid + 1) * chunksize, SIZE)
+
+        temp = ${neutral}
+        for i in range(start, end):
+            # Map
+            map_output[i] = ${input_expr}
+
+            # Scan
+            a = temp
+            b = map_output[i]
+            temp = ${scan_expr}
+
+        buffer[buffer_idx] = temp
+
+    for i in range(n_thread - 1):
+        a = buffer[i * stride]
+        b = buffer[(i + 1) * stride]
+        buffer[(i + 1) * stride] = ${scan_expr}
+
+    % if calc_last_item:
+    cdef ${type} last_item = buffer[(n_thread - 1) * stride]
+    % endif
+
+    # Shift buffer by 1
+    for i in range(n_thread - 1, 0, -1):
+        buffer[i * stride] = buffer[(i - 1) * stride]
+    buffer[0] = ${neutral}
+
+    # Pass 3: Store
+    cdef ${type} carry, item, prev_item
+
+
+
+    with nogil, parallel():
+        tid = threadid()
+        buffer_idx = tid * stride
+        carry = buffer[buffer_idx]
+
+        start = tid * chunksize
+        end = min((tid + 1) * chunksize, SIZE)
+
+        for i in range(start, end):
+            # Output
+            a = carry
+            b = map_output[i]
+
+            % if calc_prev_item:
+            prev_item = carry
+            % endif
+
+            carry = ${scan_expr}
+            item = carry
+
+            ${output_expr}
+    free(buffer)
+
+cpdef py_${name}(${py_arg_sig}):
+    return c_${name}(${py_args})
+'''
 
 class Elementwise(object):
     def __init__(self, func, backend='cython'):
@@ -459,15 +572,32 @@ class Scan(object):
             # On Windows, INFINITY is not defined so we use INFTY which we
             # internally define.
             self.neutral = neutral.replace('INFINITY', 'INFTY')
-            raise NotImplementedError(
-                'Scan not supported for Cython backend.'
-            )
         else:
             self.neutral = neutral
         self._config = get_config()
         self.cython_gen = CythonGenerator()
         self.queue = None
         self._generate()
+
+    def _correct_return_type(self, c_data, modifier):
+        code = self.tp.blocks[-1].code.splitlines()
+        code[0] = "cdef inline {type} {name}_{modifier}({args}) nogil:".format(
+            type=self.type, name=self.name, modifier=modifier,
+            args=', '.join(c_data[0])
+        )
+        self.tp.blocks[-1].code = '\n'.join(code)
+
+    def _include_prev_item(self):
+        if 'prev_item' in self.tp.blocks[-1].code:
+            return True
+        else:
+            return False
+
+    def _include_last_item(self):
+        if 'last_item' in self.tp.blocks[-1].code:
+            return True
+        else:
+            return False
 
     def _wrap_ocl_function(self, func):
         if func is not None:
@@ -486,6 +616,20 @@ class Scan(object):
             arguments = ''
             expr = None
         return expr, arguments
+
+    def _ignore_arg(self, arg_name):
+        if arg_name in ['item', 'prev_item', 'last_item', 'i']:
+            return True
+        return False
+
+    def _num_ignore_args(self, c_data):
+        result = 0
+        for arg_name in c_data[1][:]:
+            if self._ignore_arg(arg_name):
+                result += 1
+            else:
+                break
+        return result
 
     def _generate(self):
         if self.backend == 'opencl':
@@ -515,6 +659,68 @@ class Scan(object):
                 preamble=preamble
             )
             self.c_func = knl
+        elif self.backend == 'cython':
+            if self.input_func is not None:
+                self.tp.add(self.input_func)
+                py_data, c_data = self.cython_gen.get_func_signature(self.input_func)
+                self._correct_return_type(c_data, 'input')
+                name = self.name
+                cargs = ', '.join(c_data[1])
+                input_expr = '{name}_input({cargs})'.format(name=name, cargs=cargs)
+            else:
+                py_data = (['int i', '{type}[:] inp'.format(type=self.type)],
+                           ['i', '&inp[0]'])
+                c_data = (['int i', '{type}* inp'.format(type=self.type)],
+                          ['i', 'inp'])
+                input_expr = 'inp[i]'
+
+
+            calc_last_item = False
+            calc_prev_item = False
+
+            if self.output_func is not None:
+                self.tp.add(self.output_func)
+                output_py_data, output_c_data = self.cython_gen.get_func_signature(self.output_func)
+                self._correct_return_type(output_c_data, 'output')
+
+                calc_last_item = self._include_last_item()
+                calc_prev_item = self._include_prev_item()
+
+                name = self.name
+                cargs = ', '.join(output_c_data[1])
+                output_expr = '{name}_output({cargs})'.format(name=name, cargs=cargs)
+
+                n_ignore = self._num_ignore_args(output_c_data)
+
+                py_data = (py_data[0] + output_py_data[0][n_ignore:],
+                           py_data[1] + output_py_data[1][n_ignore:])
+                c_data = (c_data[0] + output_c_data[0][n_ignore:],
+                          c_data[1] + output_c_data[1][n_ignore:])
+            else:
+                output_expr = ''
+
+            py_defn = ['long SIZE'] + py_data[0][1:]
+            c_defn = ['long SIZE'] + c_data[0][1:]
+            py_args = ['SIZE'] + py_data[1][1:]
+
+            template = Template(text=scan_cy_template)
+            src = template.render(
+                name=self.name,
+                type=self.type,
+                input_expr=input_expr,
+                scan_expr=self.scan_expr,
+                output_expr=output_expr,
+                neutral=self.neutral,
+                c_arg_sig=', '.join(c_defn),
+                py_arg_sig=', '.join(py_defn),
+                py_args=', '.join(py_args),
+                openmp=self._config.use_openmp,
+                calc_last_item=calc_last_item,
+                calc_prev_item=calc_prev_item
+            )
+            self.tp.add_code(src)
+            self.tp.compile()
+            self.c_func = getattr(self.tp.mod, 'py_' + self.name)
 
     def _add_address_space(self, arg):
         if '*' in arg and '__global' not in arg:
