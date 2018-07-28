@@ -151,7 +151,8 @@ class TestParallelUtils(unittest.TestCase):
         # print(result, y)
         self.assertTrue(np.all(expect[:-1] == result[1:]))
 
-    def _get_scan_parameters(self, backend):
+    def _test_scan(self, backend):
+        # Given
         a = np.arange(10000, dtype=np.int32)
         data = a.copy()
         expect = np.cumsum(data)
@@ -166,31 +167,26 @@ class TestParallelUtils(unittest.TestCase):
         def output_f(i, item, output_ary):
             output_ary[i] = item
 
+        # When
         scan = Scan(input_f, output_f, 'a+b', dtype=np.int32,
                     backend=backend)
-
-        return scan, a, expect
-
-    def test_scan_works_openmp(self):
-        scan, a, expect = self._get_scan_parameters(backend='cython')
-
         scan(a, a)
+
         a.pull()
         result = a.data
 
+        # Then
         np.testing.assert_equal(expect, result)
 
-    def test_scan_works_openmp_parallel(self):
+    def test_scan_works_cython(self):
+        self._test_scan(backend='cython')
+
+    def test_scan_works_cython_parallel(self):
         with use_config(use_openmp=True):
-            scan, a, expect = self._get_scan_parameters(backend='cython')
+            self._test_scan(backend='cython')
 
-            scan(a, a)
-            a.pull()
-            result = a.data
-
-            np.testing.assert_equal(expect, result)
-
-    def _get_unique_scan_parameters(self, backend):
+    def _test_unique_scan(self, backend):
+        # Given
         a = np.random.randint(0, 100, 100, dtype=np.int32)
         a = np.sort(a)
         data = a.copy()
@@ -226,43 +222,23 @@ class TestParallelUtils(unittest.TestCase):
                 unique_count[0] = item
 
         # When
-        s = Scan(input_f, output_f, 'a+b', dtype=np.int32, backend=backend)
-        return (s, a, unique_ary, unique_count, unique_ary_actual,
-                unique_count_actual)
-
-    def test_scan_works_openmp_with_unique(self):
-        # Given
-        (scan, a, unique_ary, unique_count, unique_ary_actual,
-         unique_count_actual) = \
-            self._get_unique_scan_parameters(backend='cython')
-
-        # When
+        scan = Scan(input_f, output_f, 'a+b', dtype=np.int32, backend=backend)
         scan(a, a, unique_ary, unique_count)
         unique_ary.pull()
         unique_count.pull()
-
         unique_count = unique_count.data[0]
 
         # Then
+        self.assertTrue(unique_count == unique_count_actual)
         np.testing.assert_equal(unique_ary_actual,
                                 unique_ary.data[:unique_count])
-        assert (unique_count == unique_count_actual)
 
-    def test_scan_works_openmp_with_unique_parallel(self):
+    def test_unique_scan_cython(self):
+        self._test_unique_scan(backend='cython')
+
+    def test_unique_scan_cython_parallel(self):
         with use_config(use_openmp=True):
-            (scan, a, unique_ary, unique_count, unique_ary_actual,
-             unique_count_actual) = \
-                self._get_unique_scan_parameters(backend='cython')
-
-            scan(a, a, unique_ary, unique_count)
-            unique_ary.pull()
-            unique_count.pull()
-
-            unique_count = unique_count.data[0]
-
-            np.testing.assert_equal(unique_ary_actual,
-                                    unique_ary.data[:unique_count])
-            assert (unique_count == unique_count_actual)
+            self._test_unique_scan(backend='cython')
 
     def _get_segmented_scan_actual(self, a, segment_flags):
         output_actual = np.zeros_like(a)
@@ -273,7 +249,7 @@ class TestParallelUtils(unittest.TestCase):
                 output_actual[i] = a[i]
         return output_actual
 
-    def _get_segmented_scan_parameters(self, backend):
+    def _test_segmented_scan(self, backend):
         # Given
         a = np.random.randint(0, 100, 50000, dtype=np.int32)
         a_copy = a.copy()
@@ -297,27 +273,20 @@ class TestParallelUtils(unittest.TestCase):
         def output_f(i, item, output_ary):
             output_ary[i] = item
 
+        output_actual = self._get_segmented_scan_actual(a_copy, seg_copy)
+
+        # When
         scan = Scan(input_f, output_f, 'a+b', dtype=np.int32, backend=backend,
                     is_segment=segment_f)
-
-        output_actual = self._get_segmented_scan_actual(a_copy, seg_copy)
-        return scan, a, seg, output_actual
-
-    def test_segmented_scan_cython(self):
-        scan, a, seg, output_actual = self._get_segmented_scan_parameters(
-            backend='cython')
-
         scan(a, seg, a)
         a.pull()
 
+        # Then
         np.testing.assert_equal(output_actual, a.data)
+
+    def test_segmented_scan_cython(self):
+        self._test_segmented_scan(backend='cython')
 
     def test_segmented_scan_cython_parallel(self):
         with use_config(use_openmp=True):
-            scan, a, seg, output_actual = \
-                self._get_segmented_scan_parameters(backend='cython')
-
-            scan(a, seg, a)
-            a.pull()
-
-            np.testing.assert_equal(output_actual, a.data)
+            self._test_segmented_scan(backend='cython')
