@@ -140,14 +140,21 @@ cdef void c_${name}(${c_arg_sig}):
 
     # This striding is to do 64 bit alignment to prevent false sharing.
     stride = get_stride(64, sz)
+
     cdef ${type}* buffer
-    cdef ${type}* map_output
+    buffer = <${type}*> malloc(n_thread * stride * sz)
+
+    % if use_segment:
     cdef int* scan_seg_flags
     cdef int* chunk_new_segment
-
-    buffer = <${type}*> malloc(n_thread * stride * sz)
     scan_seg_flags = <int*> malloc(SIZE * sizeof(int))
     chunk_new_segment = <int*> malloc(n_thread * stride * sizeof(int))
+    % endif
+
+    % if complex_map:
+    cdef ${type}* map_output
+    map_output = <${type}*> malloc(SIZE * sz)
+    % endif
 
     if buffer == NULL:
         abort()
@@ -187,12 +194,17 @@ cdef void c_${name}(${c_arg_sig}):
 
             # Map
             b = ${input_expr}
+            % if complex_map:
+            map_output[i] = b
+            % endif
 
             # Scan
             temp = ${scan_expr}
 
         buffer[buffer_idx] = temp
+        % if use_segment:
         chunk_new_segment[buffer_idx] = has_segment
+        % endif
 
     # Pass 2: Aggregate chunks
     for i in range(n_thread - 1):
@@ -247,7 +259,11 @@ cdef void c_${name}(${c_arg_sig}):
             a = carry
             % endif
 
+            % if complex_map:
+            b = map_output[i]
+            % else:
             b = ${input_expr}
+            % endif
 
             % if calc_prev_item:
             prev_item = carry
@@ -257,7 +273,18 @@ cdef void c_${name}(${c_arg_sig}):
             item = carry
 
             ${output_expr}
+
+    # Clean up
     free(buffer)
+
+    % if use_segment:
+    free(scan_seg_flags)
+    free(chunk_new_segment)
+    % endif
+
+    % if complex_map:
+    free(map_output)
+    % endif
 
 cpdef py_${name}(${py_arg_sig}):
     return c_${name}(${py_args})
@@ -638,6 +665,7 @@ class Reduction(object):
 class Scan(object):
     def __init__(self, input=None, output=None, scan_expr="a+b",
                  is_segment=None, dtype=np.float64, neutral='0',
+                 complex_map=False,
                  backend='opencl'):
         backend = get_backend(backend)
         self.tp = Transpiler(backend=backend)
@@ -645,6 +673,7 @@ class Scan(object):
         self.input_func = input
         self.output_func = output
         self.is_segment_func = is_segment
+        self.complex_map=complex_map
         if input is not None:
             self.name = 'scan_' + input.__name__
         else:
@@ -829,7 +858,8 @@ class Scan(object):
                 calc_last_item=calc_last_item,
                 calc_prev_item=calc_prev_item,
                 use_segment=use_segment,
-                is_segment_start_expr=segment_expr
+                is_segment_start_expr=segment_expr,
+                complex_map=self.complex_map
             )
             self.tp.add_code(src)
             self.tp.compile()
