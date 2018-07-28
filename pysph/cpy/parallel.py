@@ -161,118 +161,139 @@ cdef void c_${name}(${c_arg_sig}):
 
     cdef int buffer_idx, start, end, has_segment
     cdef ${type} a, b, temp
-    cdef int chunksize = (SIZE + n_thread - 1) // n_thread
+    # This chunksize would divide input data equally
+    # between threads
+    # cdef int chunksize = (SIZE + n_thread - 1) // n_thread
 
-    # Pass 1
-    with nogil, parallel():
-        tid = threadid()
-        buffer_idx = tid * stride
-
-        start = tid * chunksize
-        end = min((tid + 1) * chunksize, SIZE)
-        has_segment = 0
-
-        temp = ${neutral}
-        for i in range(start, end):
-
-            % if use_segment:
-            # Generate segment flags
-            scan_seg_flags[i] = ${is_segment_start_expr}
-            if (scan_seg_flags[i]):
-                has_segment = 1
-            % endif
-
-            # Carry
-            % if use_segment:
-            if (scan_seg_flags[i]):
-                a = ${neutral}
-            else:
-                a = temp
-            % else:
-            a = temp
-            % endif
-
-            # Map
-            b = ${input_expr}
-            % if complex_map:
-            map_output[i] = b
-            % endif
-
-            # Scan
-            temp = ${scan_expr}
-
-        buffer[buffer_idx] = temp
-        % if use_segment:
-        chunk_new_segment[buffer_idx] = has_segment
-        % endif
-
-    # Pass 2: Aggregate chunks
-    for i in range(n_thread - 1):
-        % if use_segment:
-
-        # With segmented scan
-        if chunk_new_segment[(i + 1) * stride]:
-            a = ${neutral}
-        else:
-            a = buffer[i * stride]
-        b = buffer[(i + 1) * stride]
-        buffer[(i + 1) * stride] = ${scan_expr}
-
-        % else:
-
-        # Without segmented scan
-        a = buffer[i * stride]
-        b = buffer[(i + 1) * stride]
-        buffer[(i + 1) * stride] = ${scan_expr}
-
-        % endif
-
-    % if calc_last_item:
-    cdef ${type} last_item = buffer[(n_thread - 1) * stride]
-    % endif
-
-    # Shift buffer to right by 1 unit
-    for i in range(n_thread - 1, 0, -1):
-        buffer[i * stride] = buffer[(i - 1) * stride]
-
-    buffer[0] = ${neutral}
-
-    # Pass 3: Output
+    # A chunk of 1 MB per thread
+    cdef int chunksize = 1048576 / sz
+    cdef int offset = 0
+    cdef ${type} global_carry = ${neutral}
+    cdef ${type} last_item
     cdef ${type} carry, item, prev_item
 
-    with nogil, parallel():
-        tid = threadid()
-        buffer_idx = tid * stride
-        carry = buffer[buffer_idx]
+    while offset < SIZE:
+        # Pass 1
+        with nogil, parallel():
+            tid = threadid()
+            buffer_idx = tid * stride
 
-        start = tid * chunksize
-        end = min((tid + 1) * chunksize, SIZE)
+            start = offset + tid * chunksize
+            end = offset + min((tid + 1) * chunksize, SIZE)
+            has_segment = 0
 
-        for i in range(start, end):
-            # Output
+            temp = ${neutral}
+            for i in range(start, end):
+
+                % if use_segment:
+                # Generate segment flags
+                scan_seg_flags[i] = ${is_segment_start_expr}
+                if (scan_seg_flags[i]):
+                    has_segment = 1
+                % endif
+
+                # Carry
+                % if use_segment:
+                if (scan_seg_flags[i]):
+                    a = ${neutral}
+                else:
+                    a = temp
+                % else:
+                a = temp
+                % endif
+
+                # Map
+                b = ${input_expr}
+                % if complex_map:
+                map_output[i] = b
+                % endif
+
+                # Scan
+                temp = ${scan_expr}
+
+            buffer[buffer_idx] = temp
             % if use_segment:
-            if scan_seg_flags[i]:
+            chunk_new_segment[buffer_idx] = has_segment
+            % endif
+
+        # Pass 2: Aggregate chunks
+        # Add previous carry to buffer[0]
+        % if use_segment:
+        if chunk_new_segment[0]:
+            a = ${neutral}
+        else:
+            a = global_carry
+        b = buffer[0]
+        % else:
+        a = global_carry
+        b = buffer[0]
+        % endif
+        buffer[0] = ${scan_expr}
+
+        for i in range(n_thread - 1):
+            % if use_segment:
+
+            # With segmented scan
+            if chunk_new_segment[(i + 1) * stride]:
                 a = ${neutral}
             else:
+                a = buffer[i * stride]
+            b = buffer[(i + 1) * stride]
+            buffer[(i + 1) * stride] = ${scan_expr}
+
+            % else:
+
+            # Without segmented scan
+            a = buffer[i * stride]
+            b = buffer[(i + 1) * stride]
+            buffer[(i + 1) * stride] = ${scan_expr}
+
+            % endif
+
+        last_item = buffer[(n_thread - 1) * stride]
+
+        # Shift buffer to right by 1 unit
+        for i in range(n_thread - 1, 0, -1):
+            buffer[i * stride] = buffer[(i - 1) * stride]
+
+        buffer[0] = global_carry
+        global_carry = last_item
+
+        # Pass 3: Output
+        with nogil, parallel():
+            tid = threadid()
+            buffer_idx = tid * stride
+            carry = buffer[buffer_idx]
+
+            start = offset + tid * chunksize
+            end = offset + min((tid + 1) * chunksize, SIZE)
+
+            for i in range(start, end):
+                # Output
+                % if use_segment:
+                if scan_seg_flags[i]:
+                    a = ${neutral}
+                else:
+                    a = carry
+                % else:
                 a = carry
-            % else:
-            a = carry
-            % endif
+                % endif
 
-            % if complex_map:
-            b = map_output[i]
-            % else:
-            b = ${input_expr}
-            % endif
+                % if complex_map:
+                b = map_output[i]
+                % else:
+                b = ${input_expr}
+                % endif
 
-            % if calc_prev_item:
-            prev_item = carry
-            % endif
+                % if calc_prev_item:
+                prev_item = carry
+                % endif
 
-            carry = ${scan_expr}
-            item = carry
+                carry = ${scan_expr}
+                item = carry
 
-            ${output_expr}
+                ${output_expr}
+        offset += chunksize * n_thread
 
     # Clean up
     free(buffer)
