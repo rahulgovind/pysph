@@ -636,8 +636,9 @@ class Reduction(object):
 
 
 class Scan(object):
-    def __init__(self, input=None, output=None, scan_expr="a+b", is_segment=None,
-                 dtype=np.float64, neutral='0', backend='opencl'):
+    def __init__(self, input=None, output=None, scan_expr="a+b",
+                 is_segment=None, dtype=np.float64, neutral='0',
+                 backend='opencl'):
         backend = get_backend(backend)
         self.tp = Transpiler(backend=backend)
         self.backend = backend
@@ -745,11 +746,13 @@ class Scan(object):
         elif self.backend == 'cython':
             if self.input_func is not None:
                 self.tp.add(self.input_func)
-                py_data, c_data = self.cython_gen.get_func_signature(self.input_func)
+                py_data, c_data = \
+                    self.cython_gen.get_func_signature(self.input_func)
                 self._correct_return_type(c_data, 'input')
                 name = self.name
                 cargs = ', '.join(c_data[1])
-                input_expr = '{name}_input({cargs})'.format(name=name, cargs=cargs)
+                input_expr = '{name}_input({cargs})'.format(name=name,
+                                                            cargs=cargs)
             else:
                 # The first value of the arrays (int i) are all ignored
                 # later while building a list of arguments
@@ -763,13 +766,15 @@ class Scan(object):
             segment_expr = ''
             if self.is_segment_func is not None:
                 self.tp.add(self.is_segment_func)
-                segment_py_data, segment_c_data = self.cython_gen.get_func_signature(self.is_segment_func)
+                segment_py_data, segment_c_data = \
+                    self.cython_gen.get_func_signature(self.is_segment_func)
                 self._correct_return_type(segment_c_data, 'segment')
 
                 use_segment = True
 
                 cargs = ', '.join(segment_c_data[1])
-                segment_expr = '{name}_segment({cargs})'.format(name=self.name, cargs=cargs)
+                segment_expr = '{name}_segment({cargs})'.format(name=self.name,
+                                                                cargs=cargs)
                 n_ignore = self._num_ignore_args(segment_c_data)
                 py_data = (py_data[0] + segment_py_data[0][n_ignore:],
                            py_data[1] + segment_py_data[1][n_ignore:])
@@ -781,7 +786,8 @@ class Scan(object):
 
             if self.output_func is not None:
                 self.tp.add(self.output_func)
-                output_py_data, output_c_data = self.cython_gen.get_func_signature(self.output_func)
+                output_py_data, output_c_data = \
+                    self.cython_gen.get_func_signature(self.output_func)
                 self._correct_return_type(output_c_data, 'output')
 
                 calc_last_item = self._include_last_item()
@@ -789,7 +795,8 @@ class Scan(object):
 
                 name = self.name
                 cargs = ', '.join(output_c_data[1])
-                output_expr = '{name}_output({cargs})'.format(name=name, cargs=cargs)
+                output_expr = '{name}_output({cargs})'.format(name=name,
+                                                              cargs=cargs)
 
                 n_ignore = self._num_ignore_args(output_c_data)
 
