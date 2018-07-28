@@ -18,7 +18,6 @@ from .transpiler import Transpiler, convert_to_float_if_needed
 from .array import Array, get_backend
 from .types import dtype_to_ctype
 
-
 elementwise_cy_template = '''
 from cython.parallel import parallel, prange
 
@@ -112,8 +111,6 @@ from cython.parallel import parallel, prange, threadid
 from libc.stdlib cimport abort, malloc, free
 cimport openmp
 cimport numpy as np
-
-
 cpdef int get_number_of_threads():
     % if openmp:
         cdef int i, n
@@ -135,8 +132,9 @@ cdef int get_stride(int sz, int itemsize):
 
 
 cdef void c_${name}(${c_arg_sig}):
-    cdef int i, n_thread, tid, stride, sz
+    cdef int i, n_thread, tid, stride, sz, N
 
+    N = SIZE
     n_thread = get_number_of_threads()
     sz = sizeof(${type})
 
@@ -144,14 +142,17 @@ cdef void c_${name}(${c_arg_sig}):
     stride = get_stride(64, sz)
     cdef ${type}* buffer
     cdef ${type}* map_output
+    cdef int* scan_seg_flags
+    cdef int* chunk_new_segment
 
     buffer = <${type}*> malloc(n_thread * stride * sz)
-    map_output = <${type}*> malloc(SIZE * sz)
+    scan_seg_flags = <int*> malloc(SIZE * sizeof(int))
+    chunk_new_segment = <int*> malloc(n_thread * stride * sizeof(int))
 
     if buffer == NULL:
         abort()
 
-    cdef int buffer_idx, start, end
+    cdef int buffer_idx, start, end, has_segment
     cdef ${type} a, b, temp
     cdef int chunksize = (SIZE + n_thread - 1) // n_thread
 
@@ -162,37 +163,70 @@ cdef void c_${name}(${c_arg_sig}):
 
         start = tid * chunksize
         end = min((tid + 1) * chunksize, SIZE)
+        has_segment = 0
 
         temp = ${neutral}
         for i in range(start, end):
+
+            % if use_segment:
+            # Generate segment flags
+            scan_seg_flags[i] = ${is_segment_start_expr}
+            if (scan_seg_flags[i]):
+                has_segment = 1
+            % endif
+
+            # Carry
+            % if use_segment:
+            if (scan_seg_flags[i]):
+                a = ${neutral}
+            else:
+                a = temp
+            % else:
+            a = temp
+            % endif
+
             # Map
-            map_output[i] = ${input_expr}
+            b = ${input_expr}
 
             # Scan
-            a = temp
-            b = map_output[i]
             temp = ${scan_expr}
 
         buffer[buffer_idx] = temp
+        chunk_new_segment[buffer_idx] = has_segment
 
+    # Pass 2: Aggregate chunks
     for i in range(n_thread - 1):
+        % if use_segment:
+
+        # With segmented scan
+        if chunk_new_segment[(i + 1) * stride]:
+            a = ${neutral}
+        else:
+            a = buffer[i * stride]
+        b = buffer[(i + 1) * stride]
+        buffer[(i + 1) * stride] = ${scan_expr}
+
+        % else:
+
+        # Without segmented scan
         a = buffer[i * stride]
         b = buffer[(i + 1) * stride]
         buffer[(i + 1) * stride] = ${scan_expr}
+
+        % endif
 
     % if calc_last_item:
     cdef ${type} last_item = buffer[(n_thread - 1) * stride]
     % endif
 
-    # Shift buffer by 1
+    # Shift buffer to right by 1 unit
     for i in range(n_thread - 1, 0, -1):
         buffer[i * stride] = buffer[(i - 1) * stride]
+
     buffer[0] = ${neutral}
 
-    # Pass 3: Store
+    # Pass 3: Output
     cdef ${type} carry, item, prev_item
-
-
 
     with nogil, parallel():
         tid = threadid()
@@ -204,8 +238,16 @@ cdef void c_${name}(${c_arg_sig}):
 
         for i in range(start, end):
             # Output
+            % if use_segment:
+            if scan_seg_flags[i]:
+                a = ${neutral}
+            else:
+                a = carry
+            % else:
             a = carry
-            b = map_output[i]
+            % endif
+
+            b = ${input_expr}
 
             % if calc_prev_item:
             prev_item = carry
@@ -220,6 +262,47 @@ cdef void c_${name}(${c_arg_sig}):
 cpdef py_${name}(${py_arg_sig}):
     return c_${name}(${py_args})
 '''
+
+# No support for last_item in single thread
+scan_cy_single_thread_template = '''
+from cython.parallel import parallel, prange, threadid
+from libc.stdlib cimport abort, malloc, free
+cimport openmp
+cimport numpy as np
+
+cdef void c_${name}(${c_arg_sig}):
+    cdef int i, N, seg_flag_here
+    cdef ${type} a, b, item
+    N = SIZE
+
+    a = ${neutral}
+
+    for i in range(N):
+        # Segment operation
+        % if use_segment:
+        seg_flag_here = ${is_segment_start_expr}
+        if seg_flag_here:
+            a = ${neutral}
+        % endif
+
+        # Map
+        b = ${input_expr}
+
+        % if calc_prev_item:
+        prev_item = a
+        % endif
+
+        # Scan
+        a = ${scan_expr}
+        item = a
+
+        # Output
+        ${output_expr}
+
+cpdef py_${name}(${py_arg_sig}):
+    return c_${name}(${py_args})
+'''
+
 
 class Elementwise(object):
     def __init__(self, func, backend='cython'):
@@ -304,7 +387,6 @@ class Elementwise(object):
             )
             self.c_func = knl
 
-
     def _correct_opencl_address_space(self, c_data):
         code = self.tp.blocks[-1].code.splitlines()
         header_idx = 1
@@ -318,13 +400,14 @@ class Elementwise(object):
                 return 'GLOBAL_MEM ' + arg
             else:
                 return arg
+
         args = [_add_address_space(arg) for arg in c_data[0]]
         code[:header_idx] = wrap(
             'WITHIN_KERNEL void {func}({args})'.format(
                 func=self.func.__name__,
                 args=', '.join(args)
             ),
-            width=78, subsequent_indent=' '*4, break_long_words=False
+            width=78, subsequent_indent=' ' * 4, break_long_words=False
         )
         self.tp.blocks[-1].code = '\n'.join(code)
 
@@ -354,6 +437,7 @@ class Elementwise(object):
 def elementwise(func=None, backend=None):
     def _wrapper(function):
         return wraps(function)(Elementwise(function, backend=backend))
+
     if func is None:
         return _wrapper
     else:
@@ -494,7 +578,6 @@ class Reduction(object):
             )
             self.c_func = knl
 
-
     def _correct_return_type(self, c_data):
         code = self.tp.blocks[-1].code.splitlines()
         code[0] = "cdef inline {type} {name}({args}) nogil:".format(
@@ -523,7 +606,7 @@ class Reduction(object):
                 func=self.func.__name__,
                 args=', '.join(args)
             ),
-            width=78, subsequent_indent=' '*4, break_long_words=False
+            width=78, subsequent_indent=' ' * 4, break_long_words=False
         )
         self.tp.blocks[-1].code = '\n'.join(code)
 
@@ -553,7 +636,7 @@ class Reduction(object):
 
 
 class Scan(object):
-    def __init__(self, input, output, scan_expr, is_segment=None,
+    def __init__(self, input=None, output=None, scan_expr="a+b", is_segment=None,
                  dtype=np.float64, neutral='0', backend='opencl'):
         backend = get_backend(backend)
         self.tp = Transpiler(backend=backend)
@@ -618,7 +701,7 @@ class Scan(object):
         return expr, arguments
 
     def _ignore_arg(self, arg_name):
-        if arg_name in ['item', 'prev_item', 'last_item', 'i']:
+        if arg_name in ['item', 'prev_item', 'last_item', 'i', 'N']:
             return True
         return False
 
@@ -668,12 +751,30 @@ class Scan(object):
                 cargs = ', '.join(c_data[1])
                 input_expr = '{name}_input({cargs})'.format(name=name, cargs=cargs)
             else:
+                # The first value of the arrays (int i) are all ignored
+                # later while building a list of arguments
                 py_data = (['int i', '{type}[:] inp'.format(type=self.type)],
                            ['i', '&inp[0]'])
                 c_data = (['int i', '{type}* inp'.format(type=self.type)],
                           ['i', 'inp'])
                 input_expr = 'inp[i]'
 
+            use_segment = False
+            segment_expr = ''
+            if self.is_segment_func is not None:
+                self.tp.add(self.is_segment_func)
+                segment_py_data, segment_c_data = self.cython_gen.get_func_signature(self.is_segment_func)
+                self._correct_return_type(segment_c_data, 'segment')
+
+                use_segment = True
+
+                cargs = ', '.join(segment_c_data[1])
+                segment_expr = '{name}_segment({cargs})'.format(name=self.name, cargs=cargs)
+                n_ignore = self._num_ignore_args(segment_c_data)
+                py_data = (py_data[0] + segment_py_data[0][n_ignore:],
+                           py_data[1] + segment_py_data[1][n_ignore:])
+                c_data = (c_data[0] + segment_c_data[0][n_ignore:],
+                          c_data[1] + segment_c_data[1][n_ignore:])
 
             calc_last_item = False
             calc_prev_item = False
@@ -703,7 +804,10 @@ class Scan(object):
             c_defn = ['long SIZE'] + c_data[0][1:]
             py_args = ['SIZE'] + py_data[1][1:]
 
-            template = Template(text=scan_cy_template)
+            if self._config.use_openmp:
+                template = Template(text=scan_cy_template)
+            else:
+                template = Template(text=scan_cy_single_thread_template)
             src = template.render(
                 name=self.name,
                 type=self.type,
@@ -716,7 +820,9 @@ class Scan(object):
                 py_args=', '.join(py_args),
                 openmp=self._config.use_openmp,
                 calc_last_item=calc_last_item,
-                calc_prev_item=calc_prev_item
+                calc_prev_item=calc_prev_item,
+                use_segment=use_segment,
+                is_segment_start_expr=segment_expr
             )
             self.tp.add_code(src)
             self.tp.compile()
@@ -743,7 +849,7 @@ class Scan(object):
                 func=func.__name__,
                 args=', '.join(args)
             ),
-            width=78, subsequent_indent=' '*4, break_long_words=False
+            width=78, subsequent_indent=' ' * 4, break_long_words=False
         )
         self.tp.blocks[-1].code = '\n'.join(code)
 
