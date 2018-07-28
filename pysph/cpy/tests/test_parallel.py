@@ -227,12 +227,13 @@ class TestParallelUtils(unittest.TestCase):
 
         # When
         s = Scan(input_f, output_f, 'a+b', dtype=np.int32, backend=backend)
-        return s, a, unique_ary, unique_count, \
-               unique_ary_actual, unique_count_actual
+        return (s, a, unique_ary, unique_count, unique_ary_actual,
+                unique_count_actual)
 
     def test_scan_works_openmp_with_unique(self):
         # Given
-        scan, a, unique_ary, unique_count, unique_ary_actual, unique_count_actual = \
+        (scan, a, unique_ary, unique_count, unique_ary_actual,
+         unique_count_actual) = \
             self._get_unique_scan_parameters(backend='cython')
 
         # When
@@ -249,7 +250,8 @@ class TestParallelUtils(unittest.TestCase):
 
     def test_scan_works_openmp_with_unique_parallel(self):
         with use_config(use_openmp=True):
-            scan, a, unique_ary, unique_count, unique_ary_actual, unique_count_actual = \
+            (scan, a, unique_ary, unique_count, unique_ary_actual,
+             unique_count_actual) = \
                 self._get_unique_scan_parameters(backend='cython')
 
             scan(a, a, unique_ary, unique_count)
@@ -302,7 +304,8 @@ class TestParallelUtils(unittest.TestCase):
         return scan, a, seg, output_actual
 
     def test_segmented_scan_cython(self):
-        scan, a, seg, output_actual = self._get_segmented_scan_parameters(backend='cython')
+        scan, a, seg, output_actual = self._get_segmented_scan_parameters(
+            backend='cython')
 
         scan(a, seg, a)
         a.pull()
