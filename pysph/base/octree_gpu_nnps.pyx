@@ -15,7 +15,7 @@ from mako.template import Template
 from pysph.base.gpu_nnps_helper import GPUNNPSHelper
 from pysph.base.opencl import DeviceArray
 from pysph.cpy.opencl import get_config, profile
-from pysph.base.tree.point_octree import OctreeGPU
+from pysph.base.tree.octree_nnps import OctreeGPUNNPS as OctreeGPU
 
 cdef class OctreeGPUNNPS(GPUNNPS):
     def __init__(self, int dim, list particles, double radius_scale=2.0,
@@ -136,19 +136,19 @@ cdef class OctreeGPUNNPS(GPUNNPS):
         pa_gpu_src = octree_src.pa.gpu
 
         return [
-            octree_dst.unique_cids.array.data, octree_src.pids.array.data,
-            octree_dst.pids.array.data,
-            octree_dst.cids.array.data,
-            octree_src.pbounds.array.data, octree_dst.pbounds.array.data,
-            pa_gpu_src.x.data, pa_gpu_src.y.data, pa_gpu_src.z.data,
-            pa_gpu_src.h.data,
-            pa_gpu_dst.x.data, pa_gpu_dst.y.data, pa_gpu_dst.z.data,
-            pa_gpu_dst.h.data,
-            np.float32(octree_dst.radius_scale), #TODO: Change this
-            self.neighbor_cid_counts.array.data,
-            self.neighbor_cids.array.data
-        ], [
-            (self.leaf_size * octree_dst.unique_cid_count,),
-            (self.leaf_size,)
-        ]
-
+                   octree_dst.unique_cids.array.data,
+                   octree_src.pids.array.data,
+                   octree_dst.pids.array.data,
+                   octree_dst.cids.array.data,
+                   octree_src.pbounds.array.data, octree_dst.pbounds.array.data,
+                   pa_gpu_src.x.data, pa_gpu_src.y.data, pa_gpu_src.z.data,
+                   pa_gpu_src.h.data,
+                   pa_gpu_dst.x.data, pa_gpu_dst.y.data, pa_gpu_dst.z.data,
+                   pa_gpu_dst.h.data,
+                   np.float32(octree_dst.radius_scale),  #TODO: Change this
+                   self.neighbor_cid_counts.array.data,
+                   self.neighbor_cids.array.data
+               ], [
+                   (self.leaf_size * octree_dst.unique_cid_count,),
+                   (self.leaf_size,)
+               ]

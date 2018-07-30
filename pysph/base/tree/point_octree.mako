@@ -112,7 +112,6 @@
 
 </%def>
 
-
 <%def name="find_neighbors_template(data_t, sorted, wgs)" cached="False">
     /*
      * Property owners

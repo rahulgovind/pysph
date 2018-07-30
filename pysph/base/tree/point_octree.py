@@ -1,29 +1,24 @@
+import numpy as np
+import sys
+from pytools import memoize
+
 import pyopencl as cl
 import pyopencl.array
 import pyopencl.cltypes
 from pyopencl.elementwise import ElementwiseKernel
 from pyopencl.scan import GenericScanKernel
 
-import numpy as np
-
 from pysph.base.gpu_nnps_helper import GPUNNPSHelper
-from pysph.base.opencl import DeviceArray, DeviceWGSException
+from pysph.base.opencl import DeviceArray
 from pysph.cpy.opencl import get_context, get_queue, profile_kernel, \
     named_profile
-from pytools import memoize
-
-import sys
-
-from mako.template import Template
 from pysph.base.tree.helpers import cache_result, ParticleArrayWrapper, \
     ctype_to_dtype
 
+from mako.template import Template
+
+# For Mako
 disable_unicode = False if sys.version_info.major > 2 else True
-
-
-class IncompatibleOctreesException(Exception):
-    pass
-
 
 NODE_KERNEL_TEMPLATE = r"""
 uint node_idx = i;
@@ -102,10 +97,16 @@ DFS_TEMPLATE = r"""
 """
 
 
+# `(sfc[i] & mask) >> rshift` directly gives the octant (0-7) a particle
+# belongs to in a given layer
+# The segmented scan generates an array of vectors. Let's call this array v.
+# Then `v[i][j]` gives the number of particles before or at index `i` which are
+# going to be in octant `j` or an octant lesser than `j`.
+# Eg. v[23][4] gives the particles indexed between 0 and 23 which are going
+# to be in an octant from 0-4
 @named_profile('particle_reordering')
 @memoize
 def _get_particle_kernel(ctx):
-    # TODO: Combine with node kernel
     return GenericScanKernel(
         ctx, cl.cltypes.uint8, neutral="0",
         arguments=r"""__global ulong *sfc,
@@ -135,6 +136,10 @@ def _get_particle_kernel(ctx):
     )
 
 
+# The offset of a node's child is given by:
+# offset of first child in next layer + 8 * (number of non-leaf nodes before
+# given node).
+# If the node is a leaf, we set this value to be -1.
 @named_profile('set_offset')
 @memoize
 def _get_set_offset_kernel(ctx, leaf_size):
@@ -142,29 +147,23 @@ def _get_set_offset_kernel(ctx, leaf_size):
         ctx, np.int32, neutral="0",
         arguments=r"""__global uint2 *pbounds, __global uint *offsets,
                       __global int *leaf_count, int csum_nodes_next""",
-        input_expr="(pbounds[i].s1 - pbounds[i].s0 <= %(leaf_size)s)" % {
+        input_expr="(pbounds[i].s1 - pbounds[i].s0 > %(leaf_size)s)" % {
             'leaf_size': leaf_size},
         scan_expr="a + b",
         output_statement=r"""{
             offsets[i] = ((pbounds[i].s1 - pbounds[i].s0 > %(leaf_size)s) ?
-                           csum_nodes_next + (8 * (i - item)) : -1);
-            if (i == N - 1) { *leaf_count = item; }
+                           csum_nodes_next + (8 * (item - 1)) : -1);
+            if (i == N - 1) { *leaf_count = (N - item); }
         }""" % {'leaf_size': leaf_size}
     )
 
 
-@named_profile('neighbor_psum')
-@memoize
-def _get_neighbor_psum_kernel(ctx):
-    return GenericScanKernel(
-        ctx, np.int32, neutral="0",
-        arguments=r"""__global int *neighbor_counts""",
-        input_expr="neighbor_counts[i]",
-        scan_expr="a + b",
-        output_statement=r"""neighbor_counts[i] = prev_item;"""
-    )
-
-
+# Each particle belongs to a given cell and the cell is indexed as cid.
+# The unique_cids algorithm
+# 1) unique_cids_map: unique_cids_map[i] gives the number of unique_cids
+#                     before index i.
+# 2) unique_cids: List of unique cids.
+# 3) unique_cids_count: Number of unique cids
 @named_profile('unique_cids')
 @memoize
 def _get_unique_cids_kernel(ctx):
@@ -190,12 +189,12 @@ def _get_cid_groups_kernel(ctx):
     return GenericScanKernel(
         ctx, np.uint32, neutral="0",
         arguments="""int *unique_cids, uint2 *pbounds,
-            int *group_map, int *group_count, int gmin, int gmax""",
+            int *group_cids, int *group_count, int gmin, int gmax""",
         input_expr="pass(pbounds[unique_cids[i]], gmin, gmax)",
         scan_expr="(a + b)",
         output_statement=r"""
         if (item != prev_item) {
-            group_map[item - 1] = unique_cids[i];
+            group_cids[item - 1] = unique_cids[i];
         }
         if (i == N - 1) *group_count = item;
         """,
@@ -209,10 +208,10 @@ def _get_cid_groups_kernel(ctx):
 
 
 @memoize
-def get_helper(ctx, c_type):
+def get_helper(ctx, src_file, c_type):
     # ctx and c_type are the only parameters that
     # change here
-    return GPUNNPSHelper(ctx, "tree/point_octree.mako",
+    return GPUNNPSHelper(ctx, src_file,
                          c_type=c_type)
 
 
@@ -232,7 +231,8 @@ def get_dtype_str(use_double):
 
 class OctreeGPU(object):
     def __init__(self, pa, radius_scale=1.0,
-                 use_double=False, leaf_size=32, c_type='float'):
+                 use_double=False, leaf_size=32, c_type='float',
+                 src_file='tree/point_octree.mako'):
         self.c_type = c_type
         self.c_type_src = 'double' if use_double else 'float'
         self.pa = ParticleArrayWrapper(pa, self.c_type_src,
@@ -243,7 +243,7 @@ class OctreeGPU(object):
         self.ctx = get_context()
         self.queue = get_queue()
         self.sorted = False
-        self.helper = get_helper(self.ctx, self.c_type)
+        self.helper = get_helper(self.ctx, src_file, self.c_type)
 
         if c_type == 'half':
             self.makeo_vec = cl.array.vec.make_half3
@@ -263,13 +263,16 @@ class OctreeGPU(object):
         self.depth = 0
         self.leaf_size = leaf_size
 
+    ##########################################################################
+    # Octree construction algorithms
+    ##########################################################################
     def refresh(self, xmin, xmax, hmin, fixed_depth=None):
         self.pa.sync()
         self.xmin = np.array(xmin)
         self.xmax = np.array(xmax)
         self.hmin = hmin
 
-        # Convert width of domain to power of 2 multiple of cell size
+        # Convert width of domain to a power of 2 multiple of cell size
         # (Optimal width for cells)
         cell_size = self.hmin * self.radius_scale * (1. + 1e-5)
         max_width = np.max(self.xmax - self.xmin)
@@ -293,7 +296,7 @@ class OctreeGPU(object):
         self._build_tree(fixed_depth)
 
     def _calc_cell_size_and_depth(self):
-        self.cell_size = self.hmin * self.radius_scale * (1. + 1e-5)
+        self.cell_size = self.hmin * self.radius_scale * (1. + 1e-3)
         self.cell_size /= 128
         max_width = max((self.xmax[i] - self.xmin[i]) for i in range(3))
         self.max_depth = int(np.ceil(np.log2(max_width / self.cell_size))) + 1
@@ -309,6 +312,7 @@ class OctreeGPU(object):
         # Filled after tree built
         self.pbounds = None
         self.offsets = None
+        self.initialized = True
 
     def _reinitialize_data(self):
         self.sorted = False
@@ -326,111 +330,31 @@ class OctreeGPU(object):
         dtype = ctype_to_dtype(self.c_type)
         fill_particle_data = self.helper.get_kernel("fill_particle_data")
         pa_gpu = self.pa.gpu
-        # print('pa_gpu.x', pa_gpu.is_copy)
         fill_particle_data(pa_gpu.x, pa_gpu.y, pa_gpu.z,
                            dtype(self.cell_size),
                            self.make_vec(
                                self.xmin[0], self.xmin[1], self.xmin[2]),
                            self.pid_keys.array, self.pids.array)
 
-    def _update_node_data(self, offsets_prev, pbounds_prev, offsets, pbounds,
-                          seg_flag, octants, csum_nodes, csum_nodes_next, n):
-        """Update node data and return number of children which are leaves."""
-
-        # Update particle-related data of children
-        set_node_data = self.helper.get_kernel("set_node_data")
-        set_node_data(offsets_prev.array, pbounds_prev.array,
-                      offsets.array, pbounds.array,
-                      seg_flag.array, octants.array, np.uint32(csum_nodes),
-                      np.uint32(n))
-
-        # Set children offsets
-        leaf_count = DeviceArray(np.uint32, 1)
-        set_offsets = _get_set_offset_kernel(self.ctx, self.leaf_size)
-        set_offsets(pbounds.array, offsets.array, leaf_count.array,
-                    np.uint32(csum_nodes_next))
-        return leaf_count.array[0].get()
-
-    def _build_tree(self, fixed_depth=None):
-        """Build octree
-        """
-        num_leaves_here = 0
-        n = self.pa.get_number_of_particles()
-        temp_vars = {}
-        csum_nodes_prev = 0
-        csum_nodes = 1
-        self.depth = 0
-        self.num_nodes = [1]
-
-        # Initialize temporary data (but persistent across layers)
-        self.create_temp_vars(temp_vars)
-
-        octants = DeviceArray(cl.cltypes.uint8, n)
-
-        seg_flag = DeviceArray(cl.cltypes.char, n)
-        seg_flag.fill(0)
-        seg_flag.array[0] = 1
-
-        offsets_temp = [DeviceArray(np.int32, 1)]
-        offsets_temp[-1].fill(1)
-
-        pbounds_temp = [DeviceArray(cl.cltypes.uint2, 1)]
-        pbounds_temp[-1].array[0].set(cl.cltypes.make_uint2(0, n))
-
-        loop_lim = self.max_depth if fixed_depth is None else fixed_depth
-        for depth in range(1, loop_lim):
-            num_nodes = 8 * (self.num_nodes[-1] - num_leaves_here)
-            if num_nodes == 0:
-                break
-            else:
-                self.depth += 1
-            self.num_nodes.append(num_nodes)
-            # Allocate new layer
-            offsets_temp.append(DeviceArray(np.int32, self.num_nodes[-1]))
-            pbounds_temp.append(DeviceArray(cl.cltypes.uint2,
-                                            self.num_nodes[-1]))
-
-            self._reorder_particles(depth, octants, offsets_temp[-2],
-                                    pbounds_temp[-2], seg_flag,
-                                    csum_nodes_prev,
-                                    temp_vars)
-            num_leaves_here = self._update_node_data(
-                offsets_temp[-2], pbounds_temp[-2],
-                offsets_temp[-1], pbounds_temp[-1],
-                seg_flag, octants,
-                csum_nodes, csum_nodes + self.num_nodes[-1], n
-            )
-
-            csum_nodes_prev = csum_nodes
-            csum_nodes += self.num_nodes[-1]
-
-        # Compress all layers into a single array
-        self._compress_layers(offsets_temp, pbounds_temp)
-
-        self.unique_cids = DeviceArray(np.uint32, n=n)
-        self.unique_cids_map = DeviceArray(np.uint32, n=n)
-        uniq_count = DeviceArray(np.uint32, n=1)
-        unique_cids_kernel = _get_unique_cids_kernel(self.ctx)
-        unique_cids_kernel(self.cids.array, self.unique_cids_map.array,
-                           self.unique_cids.array, uniq_count.array)
-        self.unique_cid_count = uniq_count.array[0].get()
-        self.clean_temp_vars(temp_vars)
-
-    def create_temp_vars(self, temp_vars):
+    # A little bit of manual book-keeping for temporary variables
+    # We could instead just allocate new arrays for each iteration of
+    # the build step and let the GC take care of stuff but this is probably
+    # a better approach to save on memory
+    def _create_temp_vars(self, temp_vars):
         n = self.pa.get_number_of_particles()
         temp_vars['pids'] = DeviceArray(np.uint32, n)
         temp_vars['pid_keys'] = DeviceArray(np.uint64, n)
         temp_vars['cids'] = DeviceArray(np.uint32, n)
 
-    def clean_temp_vars(self, temp_vars):
-        for k in list(temp_vars.keys()):
-            del temp_vars[k]
-
-    def exchange_temp_vars(self, temp_vars):
+    def _exchange_temp_vars(self, temp_vars):
         for k in temp_vars.keys():
             t = temp_vars[k]
             temp_vars[k] = getattr(self, k)
             setattr(self, k, t)
+
+    def _clean_temp_vars(self, temp_vars):
+        for k in list(temp_vars.keys()):
+            del temp_vars[k]
 
     def _reorder_particles(self, depth, octants, offsets_parent,
                            pbounds_parent,
@@ -453,7 +377,25 @@ class OctreeGPU(object):
                           temp_vars['cids'].array,
                           mask, rshift,
                           np.uint32(csum_nodes_prev))
-        self.exchange_temp_vars(temp_vars)
+        self._exchange_temp_vars(temp_vars)
+
+    def _update_node_data(self, offsets_prev, pbounds_prev, offsets, pbounds,
+                          seg_flag, octants, csum_nodes, csum_nodes_next, n):
+        """Update node data and return number of children which are leaves."""
+
+        # Update particle-related data of children
+        set_node_data = self.helper.get_kernel("set_node_data")
+        set_node_data(offsets_prev.array, pbounds_prev.array,
+                      offsets.array, pbounds.array,
+                      seg_flag.array, octants.array, np.uint32(csum_nodes),
+                      np.uint32(n))
+
+        # Set children offsets
+        leaf_count = DeviceArray(np.uint32, 1)
+        set_offsets = _get_set_offset_kernel(self.ctx, self.leaf_size)
+        set_offsets(pbounds.array, offsets.array, leaf_count.array,
+                    np.uint32(csum_nodes_next))
+        return leaf_count.array[0].get()
 
     def _compress_layers(self, offsets_temp, pbounds_temp):
         curr_offset = 0
@@ -476,6 +418,79 @@ class OctreeGPU(object):
             )
             curr_offset += self.num_nodes[i]
 
+    def _get_unique_cids_and_count(self):
+        n = self.pa.get_number_of_particles()
+        self.unique_cids = DeviceArray(np.uint32, n=n)
+        self.unique_cids_map = DeviceArray(np.uint32, n=n)
+        uniq_count = DeviceArray(np.uint32, n=1)
+        unique_cids_kernel = _get_unique_cids_kernel(self.ctx)
+        unique_cids_kernel(self.cids.array, self.unique_cids_map.array,
+                           self.unique_cids.array, uniq_count.array)
+        self.unique_cid_count = uniq_count.array[0].get()
+
+    def _build_tree(self, fixed_depth=None):
+        """Build octree
+        """
+        num_leaves_here = 0
+        n = self.pa.get_number_of_particles()
+        temp_vars = {}
+        csum_nodes_prev = 0
+        csum_nodes = 1
+        self.depth = 0
+        self.num_nodes = [1]
+
+        # Initialize temporary data (but persistent across layers)
+        self._create_temp_vars(temp_vars)
+
+        octants = DeviceArray(cl.cltypes.uint8, n)
+
+        seg_flag = DeviceArray(cl.cltypes.char, n)
+        seg_flag.fill(0)
+        seg_flag.array[0] = 1
+
+        offsets_temp = [DeviceArray(np.int32, 1)]
+        offsets_temp[-1].fill(1)
+
+        pbounds_temp = [DeviceArray(cl.cltypes.uint2, 1)]
+        pbounds_temp[-1].array[0].set(cl.cltypes.make_uint2(0, n))
+
+        loop_lim = min(self.max_depth if fixed_depth is None else fixed_depth,
+                       20)
+
+        for depth in range(1, loop_lim):
+            num_nodes = 8 * (self.num_nodes[-1] - num_leaves_here)
+            if num_nodes == 0:
+                break
+            else:
+                self.depth += 1
+            self.num_nodes.append(num_nodes)
+
+            # Allocate new layer
+            offsets_temp.append(DeviceArray(np.int32, self.num_nodes[-1]))
+            pbounds_temp.append(DeviceArray(cl.cltypes.uint2,
+                                            self.num_nodes[-1]))
+
+            self._reorder_particles(depth, octants, offsets_temp[-2],
+                                    pbounds_temp[-2], seg_flag,
+                                    csum_nodes_prev,
+                                    temp_vars)
+            num_leaves_here = self._update_node_data(
+                offsets_temp[-2], pbounds_temp[-2],
+                offsets_temp[-1], pbounds_temp[-1],
+                seg_flag, octants,
+                csum_nodes, csum_nodes + self.num_nodes[-1], n
+            )
+
+            csum_nodes_prev = csum_nodes
+            csum_nodes += self.num_nodes[-1]
+
+        self._compress_layers(offsets_temp, pbounds_temp)
+        self._get_unique_cids_and_count()
+        self._clean_temp_vars(temp_vars)
+
+    ###########################################################################
+    # Octree API
+    ###########################################################################
     def allocate_node_prop(self, dtype):
         return DeviceArray(dtype, self.total_nodes)
 
@@ -488,6 +503,9 @@ class OctreeGPU(object):
         else:
             return "#define PID(idx) (pids[idx])"
 
+    ###########################################################################
+    # General Octree Algorithms
+    ###########################################################################
     def tree_bottom_up(self, args, setup, leaf_operation, node_operation,
                        output_expr):
         @cache_result('_tree_bottom_up')
@@ -531,6 +549,37 @@ class OctreeGPU(object):
         return _tree_bottom_up(self.ctx, self.c_type, self.sorted, args, setup,
                                leaf_operation, node_operation, output_expr)
 
+    def get_leaf_size_partitions(self, group_min, group_max):
+        """Partition leaves based on leaf size
+
+        Parameters
+        ----------
+        group_min
+            Minimum leaf size
+        group_max
+            Maximum leaf size
+        Returns
+        -------
+        groups : DeviceArray
+            An array which contains the cell ids of leaves
+            with leaf size > group_min and leaf size <= group_max
+        group_count : int
+            The number of leaves which satisfy the given condition
+            on the leaf size
+        """
+        groups = DeviceArray(np.uint32, int(self.unique_cid_count))
+        group_count = DeviceArray(np.uint32, 1)
+
+        get_cid_groups = _get_cid_groups_kernel(self.ctx)
+        get_cid_groups(self.unique_cids.array[:self.unique_cid_count],
+                       self.pbounds.array, groups.array, group_count.array,
+                       np.int32(group_min), np.int32(group_max))
+        result = groups, int(group_count.array[0].get())
+        return result
+
+    ###########################################################################
+    # Point Octree Algorithms
+    ###########################################################################
     def leaf_tree_traverse(self, args, setup, node_operation, leaf_operation,
                            output_expr, common_operation=""):
         """
@@ -575,8 +624,8 @@ class OctreeGPU(object):
                     ${data_t} h = n1[6];
                     char res = 1;
                     %for i in range(3):
-                        res = res & (n1[${i}] - h <= n2[${i}]) &
-                              (n1[3 + ${i}] + h >= n2[3 + ${i}]);
+                        res = res & (n1[${i}] - h - EPS <= n2[${i}]) &
+                              (n1[3 + ${i}] + h + EPS >= n2[3 + ${i}]);
                     %endfor
 
                     return res;
@@ -595,7 +644,7 @@ class OctreeGPU(object):
                         w1 = fabs(n1[${i}] - n1[3 + ${i}]);
                         w2 = fabs(n2[${i}] - n2[3 + ${i}]);
                         wavg = AVG(w1, w2);
-                        res &= (cdist - wavg <= h);
+                        res &= (cdist - wavg <= h + EPS);
                     % endfor
 
                     return res;
@@ -696,344 +745,6 @@ class OctreeGPU(object):
                         dtype(self.radius_scale),
                         self.node_xmin.array, self.node_xmax.array,
                         self.node_hmax.array)
-
-    def _leaf_neighbor_operation(self, octree_src, args, setup, operation,
-                                 output_expr):
-        """
-        Template for finding neighboring cids of a cell.
-        """
-        setup = """
-        ${data_t} ndst[8];
-        ${data_t} nsrc[8];
-
-        %% for i in range(3):
-            ndst[${i}] = node_xmin_dst[cid_dst].s${i};
-            ndst[${i} + 3] = node_xmax_dst[cid_dst].s${i};
-        %% endfor
-        ndst[6] = node_hmax_dst[cid_dst];
-
-        %(setup)s;
-        """ % dict(setup=setup)
-
-        node_operation = """
-        % for i in range(3):
-            nsrc[${i}] = node_xmin_src[cid_src].s${i};
-            nsrc[${i} + 3] = node_xmax_src[cid_src].s${i};
-        % endfor
-        nsrc[6] = node_hmax_src[cid_src];
-
-        if (!intersects(ndst, nsrc) && !contains(nsrc, ndst)) {
-            flag = 0;
-            break;
-        }
-        """
-
-        leaf_operation = """
-        %% for i in range(3):
-            nsrc[${i}] = node_xmin_src[cid_src].s${i};
-            nsrc[${i} + 3] = node_xmax_src[cid_src].s${i};
-        %% endfor
-        nsrc[6] = node_hmax_src[cid_src];
-
-        if (intersects(ndst, nsrc) || contains_search(ndst, nsrc)) {
-            %(operation)s;
-        }
-        """ % dict(operation=operation)
-
-        output_expr = output_expr
-        args = """
-        ${data_t}3 *node_xmin_src, ${data_t}3 *node_xmax_src,
-        ${data_t} *node_hmax_src,
-        ${data_t}3 *node_xmin_dst, ${data_t}3 *node_xmax_dst,
-        ${data_t} *node_hmax_dst,
-        """ + args
-
-        kernel = octree_src.leaf_tree_traverse(args, setup,
-                                               node_operation, leaf_operation,
-                                               output_expr)
-
-        def callable(*args):
-            return kernel(octree_src, self,
-                          octree_src.node_xmin.array,
-                          octree_src.node_xmax.array,
-                          octree_src.node_hmax.array,
-                          self.node_xmin.array, self.node_xmax.array,
-                          self.node_hmax.array,
-                          *args)
-
-        return callable
-
-    def _find_neighbor_cids(self, octree_src):
-        neighbor_cid_count = DeviceArray(np.uint32, self.unique_cid_count + 1)
-        find_neighbor_cid_counts = self._leaf_neighbor_operation(
-            octree_src,
-            args="uint2 *pbounds, int *cnt",
-            setup="int count=0",
-            operation="""
-                    if (pbounds[cid_src].s0 < pbounds[cid_src].s1)
-                        count++;
-                    """,
-            output_expr="cnt[i] = count;"
-        )
-        find_neighbor_cid_counts = profile_kernel(
-            find_neighbor_cid_counts, 'find_neighbor_cid_count')
-        find_neighbor_cid_counts(octree_src.pbounds.array,
-                                 neighbor_cid_count.array)
-
-        neighbor_psum = _get_neighbor_psum_kernel(self.ctx)
-        neighbor_psum(neighbor_cid_count.array)
-
-        total_neighbors = int(neighbor_cid_count.array[-1].get())
-        neighbor_cids = DeviceArray(np.uint32, total_neighbors)
-
-        find_neighbor_cids = self._leaf_neighbor_operation(
-            octree_src,
-            args="uint2 *pbounds, int *cnt, int *neighbor_cids",
-            setup="int offset=cnt[i];",
-            operation="""
-            if (pbounds[cid_src].s0 < pbounds[cid_src].s1)
-                neighbor_cids[offset++] = cid_src;
-            """,
-            output_expr=""
-        )
-        find_neighbor_cids = profile_kernel(
-            find_neighbor_cids, 'find_neighbor_cids')
-        find_neighbor_cids(octree_src.pbounds.array,
-                           neighbor_cid_count.array, neighbor_cids.array)
-        return neighbor_cid_count, neighbor_cids
-
-    def _find_neighbor_lengths_elementwise(self, neighbor_cid_count,
-                                           neighbor_cids, octree_src,
-                                           neighbor_count):
-        self.check_nnps_compatibility(octree_src)
-
-        pa_gpu_dst = self.pa.gpu
-        pa_gpu_src = octree_src.pa.gpu
-        dtype = ctype_to_dtype(self.c_type)
-
-        find_neighbor_counts = self.helper.get_kernel(
-            'find_neighbor_counts_elementwise', sorted=self.sorted
-        )
-        find_neighbor_counts(self.unique_cids_map.array, octree_src.pids.array,
-                             self.pids.array,
-                             self.cids.array,
-                             octree_src.pbounds.array, self.pbounds.array,
-                             pa_gpu_src.x, pa_gpu_src.y, pa_gpu_src.z,
-                             pa_gpu_src.h,
-                             pa_gpu_dst.x, pa_gpu_dst.y, pa_gpu_dst.z,
-                             pa_gpu_dst.h,
-                             dtype(self.radius_scale),
-                             neighbor_cid_count.array,
-                             neighbor_cids.array,
-                             neighbor_count)
-
-    def _find_neighbors_elementwise(self, neighbor_cid_count, neighbor_cids,
-                                    octree_src, start_indices, neighbors):
-        self.check_nnps_compatibility(octree_src)
-
-        n = self.pa.get_number_of_particles()
-        wgs = self.leaf_size
-        pa_gpu_dst = self.pa.gpu
-        pa_gpu_src = octree_src.pa.gpu
-
-        dtype = ctype_to_dtype(self.c_type)
-
-        find_neighbors = self.helper.get_kernel(
-            'find_neighbors_elementwise', sorted=self.sorted)
-        find_neighbors(self.unique_cids_map.array, octree_src.pids.array,
-                       self.pids.array,
-                       self.cids.array,
-                       octree_src.pbounds.array, self.pbounds.array,
-                       pa_gpu_src.x, pa_gpu_src.y, pa_gpu_src.z, pa_gpu_src.h,
-                       pa_gpu_dst.x, pa_gpu_dst.y, pa_gpu_dst.z, pa_gpu_dst.h,
-                       dtype(self.radius_scale),
-                       neighbor_cid_count.array,
-                       neighbor_cids.array,
-                       start_indices,
-                       neighbors)
-
-    def _is_valid_nnps_wgs(self):
-        # Max work group size can only be found by building the
-        # kernel.
-        try:
-            find_neighbor_counts = self.helper.get_kernel(
-                'find_neighbor_counts', sorted=self.sorted, wgs=self.leaf_size
-            )
-
-            find_neighbor = self.helper.get_kernel(
-                'find_neighbors', sorted=self.sorted, wgs=self.leaf_size
-            )
-        except DeviceWGSException:
-            return False
-        else:
-            return True
-
-    def _find_neighbor_lengths(self, neighbor_cid_count, neighbor_cids,
-                               octree_src, neighbor_count,
-                               use_partitions=False):
-        self.check_nnps_compatibility(octree_src)
-
-        n = self.pa.get_number_of_particles()
-        wgs = self.leaf_size
-        pa_gpu_dst = self.pa.gpu
-        pa_gpu_src = octree_src.pa.gpu
-        dtype = ctype_to_dtype(self.c_type)
-
-        def find_neighbor_counts_for_partition(partition_cids, partition_size,
-                                               partition_wgs, q=None):
-            find_neighbor_counts = self.helper.get_kernel(
-                'find_neighbor_counts', sorted=self.sorted, wgs=wgs
-            )
-            find_neighbor_counts(partition_cids.array, octree_src.pids.array,
-                                 self.pids.array,
-                                 self.cids.array,
-                                 octree_src.pbounds.array, self.pbounds.array,
-                                 pa_gpu_src.x, pa_gpu_src.y, pa_gpu_src.z,
-                                 pa_gpu_src.h,
-                                 pa_gpu_dst.x, pa_gpu_dst.y, pa_gpu_dst.z,
-                                 pa_gpu_dst.h,
-                                 dtype(self.radius_scale),
-                                 neighbor_cid_count.array,
-                                 neighbor_cids.array,
-                                 neighbor_count,
-                                 gs=(partition_wgs * partition_size,),
-                                 ls=(partition_wgs,),
-                                 queue=(get_queue() if q is None else q))
-
-        if use_partitions and wgs > 32:
-            if wgs < 128:
-                wgs1 = 32
-            else:
-                wgs1 = 64
-
-            m1, n1 = self.get_leaf_size_partitions(0, wgs1)
-
-            find_neighbor_counts_for_partition(m1, n1, min(wgs, wgs1))
-            m2, n2 = self.get_leaf_size_partitions(wgs1, wgs)
-            find_neighbor_counts_for_partition(m2, n2, wgs)
-        else:
-            find_neighbor_counts_for_partition(
-                self.unique_cids, self.unique_cid_count, wgs)
-
-    def _find_neighbors(self, neighbor_cid_count, neighbor_cids, octree_src,
-                        start_indices, neighbors, use_partitions=False):
-        self.check_nnps_compatibility(octree_src)
-
-        wgs = self.leaf_size if self.leaf_size % 32 == 0 else \
-            self.leaf_size + 32 - self.leaf_size % 32
-        pa_gpu_dst = self.pa.gpu
-        pa_gpu_src = octree_src.pa.gpu
-        dtype = ctype_to_dtype(self.c_type)
-
-        def find_neighbors_for_partition(partition_cids, partition_size,
-                                         partition_wgs, q=None):
-            find_neighbors = self.helper.get_kernel('find_neighbors',
-                                                    sorted=self.sorted,
-                                                    wgs=wgs)
-            find_neighbors(partition_cids.array, octree_src.pids.array,
-                           self.pids.array,
-                           self.cids.array,
-                           octree_src.pbounds.array, self.pbounds.array,
-                           pa_gpu_src.x, pa_gpu_src.y, pa_gpu_src.z,
-                           pa_gpu_src.h,
-                           pa_gpu_dst.x, pa_gpu_dst.y, pa_gpu_dst.z,
-                           pa_gpu_dst.h,
-                           dtype(self.radius_scale),
-                           neighbor_cid_count.array,
-                           neighbor_cids.array,
-                           start_indices,
-                           neighbors,
-                           gs=(partition_wgs * partition_size,),
-                           ls=(partition_wgs,),
-                           queue=(get_queue() if q is None else q))
-
-        if use_partitions and wgs > 32:
-            if wgs < 128:
-                wgs1 = 32
-            else:
-                wgs1 = 64
-
-            m1, n1 = self.get_leaf_size_partitions(0, wgs1)
-            fraction = (n1 / int(self.unique_cid_count))
-            # print('Fraction: ', fraction, self.unique_cid_count,
-            #      self.pa.get_number_of_particles())
-
-            if fraction > 0.3:
-                find_neighbors_for_partition(m1, n1, wgs1)
-                m2, n2 = self.get_leaf_size_partitions(wgs1, wgs)
-                assert (n1 + n2 == self.unique_cid_count)
-                find_neighbors_for_partition(m2, n2, wgs)
-                return
-        find_neighbors_for_partition(
-            self.unique_cids, self.unique_cid_count, wgs)
-
-    def get_leaf_size_partitions(self, group_min, group_max):
-        """Partition leaves based on leaf size
-
-        Parameters
-        ----------
-        group_min
-            Minimum leaf size
-        group_max
-            Maximum leaf size
-        Returns
-        -------
-        groups : DeviceArray
-            An array which contains the cell ids of leaves
-            with leaf size > group_min and leaf size <= group_max
-        group_count : int
-            The number of leaves which satisfy the given condition
-            on the leaf size
-        """
-        groups = DeviceArray(np.uint32, int(self.unique_cid_count))
-        group_count = DeviceArray(np.uint32, 1)
-
-        get_cid_groups = _get_cid_groups_kernel(self.ctx)
-        get_cid_groups(self.unique_cids.array[:self.unique_cid_count],
-                       self.pbounds.array, groups.array, group_count.array,
-                       np.int32(group_min), np.int32(group_max))
-        result = groups, int(group_count.array[0].get())
-        return result
-
-    def check_nnps_compatibility(self, octree):
-        """Check if octree types and parameters are compatible for NNPS
-
-        Two octrees must satisfy a few conditions so that NNPS can be performed
-        on one octree using the other as reference. In this case, the following
-        conditions must be satisfied -
-
-        1) Currently both should be instances of point_octree.OctreeGPU
-        2) Both must have the same sortedness
-        3) Both must use the same floating-point datatype
-        4) Both must have the same leaf sizes
-
-        Parameters
-        ----------
-        octree
-        """
-        if not isinstance(octree, OctreeGPU):
-            raise IncompatibleOctreesException(
-                "Both octrees must be of the same type for NNPS"
-            )
-
-        if self.sorted != octree.sorted:
-            raise IncompatibleOctreesException(
-                "Octree sortedness need to be the same for NNPS"
-            )
-
-        if self.c_type != octree.c_type or \
-                        self.use_double != octree.use_double:
-            raise IncompatibleOctreesException(
-                "Octree floating-point data types need to be the same for NNPS"
-            )
-
-        if self.leaf_size != octree.leaf_size:
-            raise IncompatibleOctreesException(
-                "Octree leaf sizes need to be the same for NNPS (%d != %d)" % (
-                    self.leaf_size, octree.leaf_size)
-            )
-
-        return
 
     def _sort(self):
         """Set octree as being sorted

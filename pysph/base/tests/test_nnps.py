@@ -156,9 +156,9 @@ class NNPSTestCase(unittest.TestCase):
         are checked from a -> b, b -> a , a -> a and b -> b
 
         """
-        self.numPoints1 = numPoints1 = 1 << 10
-        self.numPoints2 = numPoints2 = 1 << 11
-        self.numPoints3 = numPoints3 = 1 << 10
+        self.numPoints1 = numPoints1 = 1 << 14
+        self.numPoints2 = numPoints2 = 1 << 13
+        self.numPoints3 = numPoints3 = 1 << 12
         m4 = 8
         self.numPoints4 = numPoints4 = m4 ** 3
 

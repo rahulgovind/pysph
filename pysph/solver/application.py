@@ -702,6 +702,7 @@ class Application(object):
             "--octree-elementwise-nnps",
             action="store_const",
             dest="octree_elementwise",
+            default=False,
             const=True,
             help=("Run NNPS for different particles "
                   "on different threads")
@@ -857,11 +858,14 @@ class Application(object):
         if options.with_opencl:
             get_config().use_opencl = True
         if options.with_local_memory:
+            leaf_size = int(options.octree_leaf_size)
+            get_config().wgs = leaf_size
             get_config().use_local_memory = True
         if options.use_double:
             get_config().use_double = options.use_double
         if options.profile:
             get_config().profile = options.profile
+
         # setup the solver using any options
         self.solver.setup_solver(options.__dict__)
 
@@ -892,6 +896,7 @@ class Application(object):
 
                     from pysph.base.octree_gpu_nnps import OctreeGPUNNPS
                     # Sorting enabled by default
+                    print("Using elementwise: ", options.octree_elementwise)
                     nnps = OctreeGPUNNPS(
                         dim=solver.dim,
                         particles=self.particles,

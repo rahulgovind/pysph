@@ -8,7 +8,7 @@ from pysph.base.utils import get_particle_array   # noqa: E402
 
 from pysph.base.nnps_base import NNPSParticleArrayWrapper   # noqa: E402
 from pysph.base.tests.test_nnps import NNPSTestCase   # noqa: E402
-from pysph.base.tree.point_octree import OctreeGPU   # noqa: E402
+from pysph.base.tree.octree_nnps import OctreeGPUNNPS as OctreeGPU   # noqa: E402
 
 
 def _gen_uniform_dataset(n, h, seed=None):

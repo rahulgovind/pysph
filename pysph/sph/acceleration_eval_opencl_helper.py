@@ -87,7 +87,8 @@ import pyopencl.tools  # noqa: 401
 from pysph.base.utils import is_overloaded_method
 from pysph.base.opencl import (profile_kernel, get_context, get_queue,
                                DeviceHelper, DeviceArray)
-from pysph.base.acceleration_nnps_helper import generate_body, get_kernel_args_list
+from pysph.base.acceleration_nnps_helper import generate_body, \
+    get_kernel_args_list
 from pysph.cpy.ext_module import get_platform_dir
 from pysph.cpy.config import get_config
 from pysph.cpy.translator import (CStructHelper, OpenCLConverter,
@@ -128,6 +129,16 @@ def get_helper_code(helpers, transpiler=None):
     return result
 
 
+def print_pa_stats(pa):
+    print('hmin', cl.array.min(pa.gpu.h))
+    print('x[0..2]', pa.gpu.x[0:3].get())
+    print('xmin', (cl.array.min(pa.gpu.x), cl.array.min(pa.gpu.y),
+                   cl.array.min(pa.gpu.z)))
+
+    print('xmax', (cl.array.max(pa.gpu.x), cl.array.max(pa.gpu.y),
+                   cl.array.max(pa.gpu.z)))
+
+
 class OpenCLAccelerationEval(object):
     """Does the actual work of performing the evaluation.
     """
@@ -153,7 +164,6 @@ class OpenCLAccelerationEval(object):
                 nnps.set_context(info['src_idx'], info['dst_idx'])
                 nnps_args, gs_ls = self.nnps.get_kernel_args()
                 self._queue.finish()
-
                 args[1] = gs_ls[0]
                 args[2] = gs_ls[1]
 
@@ -658,12 +668,14 @@ class AccelerationEvalOpenCLHelper(object):
 
         s_ary, d_ary = eq_group.get_array_names()
         s_ary.update(d_ary)
+
         _args = list(s_ary)
         py_args.extend(_args)
         all_args.extend(self._get_typed_args(_args))
 
         body = '\n'.join([' ' * 4 + x for x in code])
         body = self._set_kernel(body, self.object.kernel)
+
         all_args.extend(
             ['__global {kernel}* kern'.format(kernel=sph_k_name),
              '__global unsigned int *nbr_length',
@@ -671,6 +683,7 @@ class AccelerationEvalOpenCLHelper(object):
              '__global unsigned int *neighbors',
              'double t', 'double dt']
         )
+
         self.data.append(dict(
             kernel=kernel, args=py_args, dest=dest, source=source, loop=True,
             real=group.real, type='kernel'
@@ -683,7 +696,8 @@ class AccelerationEvalOpenCLHelper(object):
             )
         )
 
-    def get_lmem_loop_kernel(self, g_idx, sg_idx, group, dest, source, eq_group):
+    def get_lmem_loop_kernel(self, g_idx, sg_idx, group, dest, source,
+                             eq_group):
         kind = 'loop'
         sub_grp = '' if sg_idx == -1 else 's{idx}'.format(idx=sg_idx)
         kernel = 'g{g_idx}{sg}_{source}_on_{dest}_loop'.format(
@@ -717,18 +731,27 @@ class AccelerationEvalOpenCLHelper(object):
                 py_args.append(py_arg)
 
         s_ary, d_ary = eq_group.get_array_names()
+
         source_vars = set(s_ary)
         source_var_types = self._get_arg_base_types(source_vars)
 
-        s_ary_global = set({x + '_global' for x in s_ary})
+        def modify_var_name(x):
+            if x.startswith('s_'):
+                return x + '_global'
+            else:
+                return x
+
+        # s_ary_global = set({x + '_global' for x in s_ary})
+        # s_ary.update(d_ary)
+        # s_ary_global.update(d_ary)
+
         s_ary.update(d_ary)
-        s_ary_global.update(d_ary)
 
         _args = list(s_ary)
         py_args.extend(_args)
 
-        _args_global = list(s_ary_global)
-        all_args.extend(self._get_typed_args(_args_global))
+        _args_modified = [modify_var_name(x) for x in _args]
+        all_args.extend(self._get_typed_args(_args_modified))
 
         setup_body = '\n'.join([' ' * 4 + x for x in setup_code])
         setup_body = self._set_kernel(setup_body, self.object.kernel)
@@ -748,7 +771,8 @@ class AccelerationEvalOpenCLHelper(object):
         ))
 
         body = generate_body(setup=setup_body, loop=loop_body,
-                             vars=source_vars, types=source_var_types)
+                             vars=source_vars, types=source_var_types,
+                             wgs=get_config().wgs)
 
         sig = get_kernel_definition(kernel, all_args)
         return (
