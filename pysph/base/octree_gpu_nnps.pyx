@@ -141,10 +141,6 @@ cdef class OctreeGPUNNPS(GPUNNPS):
                    octree_dst.pids.array.data,
                    octree_dst.cids.array.data,
                    octree_src.pbounds.array.data, octree_dst.pbounds.array.data,
-                   pa_gpu_src.x.data, pa_gpu_src.y.data, pa_gpu_src.z.data,
-                   pa_gpu_src.h.data,
-                   pa_gpu_dst.x.data, pa_gpu_dst.y.data, pa_gpu_dst.z.data,
-                   pa_gpu_dst.h.data,
                    np.float32(octree_dst.radius_scale),  #TODO: Change this
                    self.neighbor_cid_counts.array.data,
                    self.neighbor_cids.array.data

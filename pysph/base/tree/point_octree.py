@@ -229,6 +229,20 @@ def get_dtype_str(use_double):
         return 'float'
 
 
+def get_leaf_sizes(offsets, pbounds):
+    offsets = offsets.get()
+    pbounds = pbounds.get()
+    is_leaf = offsets & (pbounds['y'] - pbounds['x'] < 32)
+    p25 = is_leaf & (pbounds['y'] - pbounds['x'] < 8)
+    p50 = is_leaf & (pbounds['y'] - pbounds['x'] < 16)
+    p75 = is_leaf & (pbounds['y'] - pbounds['x'] < 24)
+
+    print(np.sum(p25) / np.sum(is_leaf),
+          np.sum(p50 & ~p25) / np.sum(is_leaf),
+          np.sum(p75 & ~p50) / np.sum(is_leaf),
+          np.sum(is_leaf & ~p75) / np.sum(is_leaf))
+
+
 class OctreeGPU(object):
     def __init__(self, pa, radius_scale=1.0,
                  use_double=False, leaf_size=32, c_type='float',
@@ -487,7 +501,7 @@ class OctreeGPU(object):
         self._compress_layers(offsets_temp, pbounds_temp)
         self._get_unique_cids_and_count()
         self._clean_temp_vars(temp_vars)
-
+        # get_leaf_sizes(self.offsets.array, self.pbounds.array)
     ###########################################################################
     # Octree API
     ###########################################################################

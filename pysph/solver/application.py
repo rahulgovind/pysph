@@ -890,9 +890,9 @@ class Application(object):
             if options.with_opencl:
                 if options.nnps == 'gpu_octree':
                     leaf_size = int(options.octree_leaf_size)
-                    if leaf_size % 32 != 0:
-                        raise ValueError("GPU Octree leaf size must "
-                                         "be a multiple of 32")
+                    # if leaf_size % 32 != 0:
+                    #     raise ValueError("GPU Octree leaf size must "
+                    #                      "be a multiple of 32")
 
                     from pysph.base.octree_gpu_nnps import OctreeGPUNNPS
                     # Sorting enabled by default
