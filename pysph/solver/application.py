@@ -1372,8 +1372,9 @@ class Application(object):
         run_duration = end_time - start_time
         self._message("Run took: %.5f secs" % (run_duration))
         if self.options.with_opencl and self.options.profile:
-            from pysph.base.opencl import print_profile
+            from pysph.base.opencl import print_profile, print_mem_usage
             print_profile()
+            print_mem_usage()
         self._write_info(
             self.info_filename, completed=True, cpu_time=run_duration)
 
