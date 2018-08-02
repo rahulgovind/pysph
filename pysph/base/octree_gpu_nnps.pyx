@@ -1,21 +1,7 @@
 #cython: embedsignature=True
-
-import pyopencl as cl
-import pyopencl.array
-import pyopencl.algorithm
-
-from pyopencl.scan import GenericScanKernel
-from pyopencl.scan import GenericDebugScanKernel
-from pyopencl.elementwise import ElementwiseKernel
-
 import numpy as np
 cimport numpy as np
-from mako.template import Template
-
-from pysph.base.gpu_nnps_helper import GPUNNPSHelper
-from pysph.base.opencl import DeviceArray
-from pysph.cpy.opencl import get_config, profile
-from pysph.base.tree.octree_nnps import OctreeGPUNNPS as OctreeGPU
+from pysph.base.tree.point_tree import PointTree
 
 cdef class OctreeGPUNNPS(GPUNNPS):
     def __init__(self, int dim, list particles, double radius_scale=2.0,
@@ -38,8 +24,10 @@ cdef class OctreeGPUNNPS(GPUNNPS):
 
         self.octrees = []
         for i in range(self.narrays):
-            self.octrees.append(OctreeGPU(self.pa_wrappers[i].pa, radius_scale,
-                                          self.use_double, leaf_size=leaf_size))
+            self.octrees.append(PointTree(pa=self.pa_wrappers[i].pa,
+                                          radius_scale=radius_scale,
+                                          use_double=self.use_double,
+                                          leaf_size=leaf_size, dim=3))
         self.use_elementwise = use_elementwise
         self.use_partitions = use_partitions
         self.allow_sort = allow_sort
@@ -58,7 +46,7 @@ cdef class OctreeGPUNNPS(GPUNNPS):
     cpdef _bin(self, int pa_index):
         self.octrees[pa_index].refresh(self.xmin, self.xmax,
                                        self.domain.manager.hmin)
-        self.octrees[pa_index]._set_node_bounds()
+        self.octrees[pa_index].set_node_bounds()
 
         if self.allow_sort:
             self.spatially_order_particles(pa_index)
@@ -92,7 +80,7 @@ cdef class OctreeGPUNNPS(GPUNNPS):
         octree_dst = self.octrees[dst_index]
         self.dst_src = src_index != dst_index
 
-        self.neighbor_cid_counts, self.neighbor_cids = octree_dst._find_neighbor_cids(
+        self.neighbor_cid_counts, self.neighbor_cids = octree_dst.find_neighbor_cids(
             octree_src)
 
     cdef void find_neighbor_lengths(self, nbr_lengths):
@@ -102,9 +90,9 @@ cdef class OctreeGPUNNPS(GPUNNPS):
 
         args = []
         if self.use_elementwise:
-            find_neighbor_lengths = octree_dst._find_neighbor_lengths_elementwise
+            find_neighbor_lengths = octree_dst.find_neighbor_lengths_elementwise
         else:
-            find_neighbor_lengths = octree_dst._find_neighbor_lengths
+            find_neighbor_lengths = octree_dst.find_neighbor_lengths
             # TODO: Check effect of partitioning on this function
             # args.append(self.use_partitions)
 
@@ -119,9 +107,9 @@ cdef class OctreeGPUNNPS(GPUNNPS):
 
         args = []
         if self.use_elementwise:
-            find_neighbors = octree_dst._find_neighbors_elementwise
+            find_neighbors = octree_dst.find_neighbors_elementwise
         else:
-            find_neighbors = octree_dst._find_neighbors
+            find_neighbors = octree_dst.find_neighbors
             args.append(self.use_partitions)
 
         find_neighbors(

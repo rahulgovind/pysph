@@ -82,6 +82,7 @@ cdef class GPUNeighborCache:
         # - Don't allocate _nbr_lengths and start_idx.
         total_size_gpu = cl.array.sum(self._nbr_lengths_gpu.array)
         cdef unsigned long total_size = <unsigned long>(total_size_gpu.get())
+        from pysph.base.opencl import sizeof_fmt
 
         # Allocate _neighbors_cpu and neighbors_gpu
         self._neighbors_gpu.resize(total_size)
