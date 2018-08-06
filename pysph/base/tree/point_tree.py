@@ -9,7 +9,7 @@ from pytools import memoize
 import sys
 import numpy as np
 
-from pyopencl.scan import ExclusiveScanKernel
+from pyopencl.scan import GenericScanKernel
 
 from mako.template import Template
 
@@ -24,7 +24,11 @@ class IncompatibleTreesException(Exception):
 @named_profile('neighbor_count_prefix_sum')
 @memoize
 def _get_neighbor_count_prefix_sum_kernel(ctx):
-    return ExclusiveScanKernel(ctx, np.int32, "a+b", neutral="0")
+    return GenericScanKernel(ctx, np.int32,
+                             arguments="__global int *ary",
+                             input_expr="ary[i]",
+                             scan_expr="a+b", neutral="0",
+                             output_statement="ary[i] = prev_item")
 
 
 @memoize
