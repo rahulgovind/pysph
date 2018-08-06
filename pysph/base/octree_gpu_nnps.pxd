@@ -36,4 +36,4 @@ cdef class OctreeGPUNNPS(GPUNNPS):
     cdef void find_neighbor_lengths(self, nbr_lengths)
     cdef void find_nearest_neighbors_gpu(self, nbrs, start_indices)
 
-    cpdef get_kernel_args(self)
+    cpdef get_kernel_args(self, c_type)

@@ -162,7 +162,8 @@ class OpenCLAccelerationEval(object):
         if info.get('loop'):
             if get_config().use_local_memory:
                 nnps.set_context(info['src_idx'], info['dst_idx'])
-                nnps_args, gs_ls = self.nnps.get_kernel_args()
+                c_type = 'double' if self._use_double else 'float'
+                nnps_args, gs_ls = self.nnps.get_kernel_args(c_type)
                 self._queue.finish()
                 args[1] = gs_ls[0]
                 args[2] = gs_ls[1]

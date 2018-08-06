@@ -125,11 +125,12 @@ cdef class OctreeGPUNNPS(GPUNNPS):
             start_indices, nbrs, *args
         )
 
-    cpdef get_kernel_args(self):
+    cpdef get_kernel_args(self, c_type):
         octree_dst = self.octrees[self.dst_index]
         octree_src = self.octrees[self.src_index]
         pa_gpu_dst = octree_dst.pa.gpu
         pa_gpu_src = octree_src.pa.gpu
+        dtype = np.float64 if c_type == 'double' else np.float32
 
         return [
                    octree_dst.unique_cids.array.data,
@@ -137,7 +138,7 @@ cdef class OctreeGPUNNPS(GPUNNPS):
                    octree_dst.pids.array.data,
                    octree_dst.cids.array.data,
                    octree_src.pbounds.array.data, octree_dst.pbounds.array.data,
-                   np.float32(octree_dst.radius_scale),  #TODO: Change this
+                   dtype(octree_dst.radius_scale),
                    self.neighbor_cid_counts.array.data,
                    self.neighbor_cids.array.data
                ], [
