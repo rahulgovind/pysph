@@ -82,17 +82,12 @@ def ctype_to_dtype(ctype):
 
 
 class GPUParticleArrayWrapper(object):
-    def __init__(self, pa_gpu, c_type_src, c_type, varnames, force_copy=True):
+    def __init__(self, pa_gpu, c_type_src, c_type, varnames):
         self.c_type = c_type
         self.c_type_src = c_type_src
         self.varnames = varnames
-        if c_type != c_type_src or force_copy:
-            self.is_copy = True
-        else:
-            self.is_copy = False
-
-        self._initialize(pa_gpu)
-        self.force_sync(pa_gpu)
+        self._allocate_memory(pa_gpu)
+        self.sync(pa_gpu)
 
     def _gpu_copy(self, pa_gpu):
         copy_kernel = get_copy_kernel(get_context(), self.c_type_src,
@@ -101,46 +96,23 @@ class GPUParticleArrayWrapper(object):
         args += [getattr(self, v) for v in self.varnames]
         copy_kernel(*args)
 
-    def _initialize(self, pa_gpu):
-        if not self.is_copy:
-            for v in self.varnames:
-                setattr(self, v, getattr(pa_gpu, v))
-        else:
-            shape = getattr(pa_gpu, self.varnames[0]).shape
-            for v in self.varnames:
-                setattr(self, v,
-                        cl.array.zeros(get_queue(), shape,
-                                       ctype_to_dtype(self.c_type))
-                        )
-        self.prev_id = -1
+    def _allocate_memory(self, pa_gpu):
+        shape = getattr(pa_gpu, self.varnames[0]).shape
+        for v in self.varnames:
+            setattr(self, v,
+                    cl.array.zeros(get_queue(), shape,
+                                   ctype_to_dtype(self.c_type))
+                    )
 
     def _gpu_sync(self, pa_gpu):
         v0 = self.varnames[0]
 
         if getattr(self, v0).shape != getattr(pa_gpu, v0).shape:
-            self._initialize(pa_gpu)
+            self._allocate_memory(pa_gpu)
         self._gpu_copy(pa_gpu)
 
-    def _ref_sync(self, pa_gpu):
-        for v in self.varnames:
-            setattr(self, v, getattr(pa_gpu, v))
-
-    def _sync(self, pa_gpu):
-        if self.is_copy:
-            self._gpu_sync(pa_gpu)
-        else:
-            self._ref_sync(pa_gpu)
-        self.prev_id = id(pa_gpu)
-
     def sync(self, pa_gpu):
-        # No syncing required
-        v0 = self.varnames[0]
-        if id(getattr(pa_gpu, v0)) == self.prev_id:
-            return
-        self.force_sync(pa_gpu)
-
-    def force_sync(self, pa_gpu):
-        self._sync(pa_gpu)
+        self._gpu_sync(pa_gpu)
 
 
 class ParticleArrayWrapper(object):
@@ -153,18 +125,26 @@ class ParticleArrayWrapper(object):
 
     def __init__(self, pa, c_type_src, c_type, varnames):
         self._pa = pa
-        self._gpu = GPUParticleArrayWrapper(pa.gpu, c_type_src,
-                                            c_type, varnames)
+        # If data types are different, then make a copy of the
+        # underlying data stored on the device
+        if c_type_src != c_type:
+            self._pa_gpu_is_copy = True
+            self._gpu = GPUParticleArrayWrapper(pa.gpu, c_type_src,
+                                                c_type, varnames)
+        else:
+            self._pa_gpu_is_copy = False
+            self._gpu = None
 
     def get_number_of_particles(self):
         return self._pa.get_number_of_particles()
 
     @property
     def gpu(self):
-        return self._gpu
+        if self._pa_gpu_is_copy:
+            return self._gpu
+        else:
+            return self._pa.gpu
 
     def sync(self):
-        self._gpu.sync(self._pa.gpu)
-
-    def force_sync(self):
-        self._gpu.force_sync(self._pa.gpu)
+        if self._pa_gpu_is_copy:
+            self._gpu.sync(self._pa.gpu)

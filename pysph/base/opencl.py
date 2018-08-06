@@ -63,8 +63,7 @@ def get_simple_kernel(kernel_name, args, src, wgs, preamble=""):
 
 
 class SimpleKernel(object):
-    """ElementwiseKernel substitute that supports
-    custom work group size.
+    """ElementwiseKernel substitute that supports a custom work group size.
     """
 
     def __init__(self, ctx, args, operation, wgs,

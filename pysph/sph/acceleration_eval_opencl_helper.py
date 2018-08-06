@@ -704,13 +704,14 @@ class AccelerationEvalOpenCLHelper(object):
             g_idx=g_idx, sg=sub_grp, source=source, dest=dest
         )
         sph_k_name = self.object.kernel.__class__.__name__
+        c_type = 'double' if get_config().use_double else 'float'
         context = eq_group.context
         all_args, py_args = [], []
         setup_code = self._declare_precomp_vars(context)
         setup_code.append('__global %s* SPH_KERNEL = kern;' % sph_k_name)
 
         if eq_group.has_loop_all():
-            raise NotImplementedError()
+            raise NotImplementedError("loop_all not suported with local memory")
 
         loop_code = []
         pre = []
@@ -741,10 +742,6 @@ class AccelerationEvalOpenCLHelper(object):
             else:
                 return x
 
-        # s_ary_global = set({x + '_global' for x in s_ary})
-        # s_ary.update(d_ary)
-        # s_ary_global.update(d_ary)
-
         s_ary.update(d_ary)
 
         _args = list(s_ary)
@@ -763,7 +760,7 @@ class AccelerationEvalOpenCLHelper(object):
             ['__global {kernel}* kern'.format(kernel=sph_k_name),
              'double t', 'double dt']
         )
-        all_args.extend(get_kernel_args_list())
+        all_args.extend(get_kernel_args_list(c_type))
 
         self.data.append(dict(
             kernel=kernel, args=py_args, dest=dest, source=source, loop=True,
@@ -772,7 +769,8 @@ class AccelerationEvalOpenCLHelper(object):
 
         body = generate_body(setup=setup_body, loop=loop_body,
                              vars=source_vars, types=source_var_types,
-                             wgs=get_config().wgs)
+                             wgs=get_config().wgs,
+                             c_type=c_type)
 
         sig = get_kernel_definition(kernel, all_args)
         return (

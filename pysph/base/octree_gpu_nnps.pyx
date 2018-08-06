@@ -23,11 +23,18 @@ cdef class OctreeGPUNNPS(GPUNNPS):
         cdef int i, num_particles
 
         self.octrees = []
+
+        if self.use_double:
+            from warnings import warn
+            warn("Octree NNPS by default uses single precision arithmetic for"
+                 "finding neighbors. A few particles outside of the original "
+                 "search radius might be included.")
+
         for i in range(self.narrays):
             self.octrees.append(PointTree(pa=self.pa_wrappers[i].pa,
                                           radius_scale=radius_scale,
                                           use_double=self.use_double,
-                                          leaf_size=leaf_size, dim=3))
+                                          leaf_size=leaf_size, dim=dim))
         self.use_elementwise = use_elementwise
         self.use_partitions = use_partitions
         self.allow_sort = allow_sort
@@ -39,7 +46,8 @@ cdef class OctreeGPUNNPS(GPUNNPS):
         if not self.octrees[0]._is_valid_nnps_wgs():
             from warnings import warn
             warn("Octree NNPS with given leaf size (%d) is "
-                 "not recommended for given device" % leaf_size)
+                 "not supported for given device. Switching to a elementwise "
+                 "version of the Octree NNPS" % leaf_size)
 
             self.use_elementwise = True
 

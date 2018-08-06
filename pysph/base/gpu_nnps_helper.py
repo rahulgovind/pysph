@@ -15,9 +15,12 @@ class GPUNNPSHelper(object):
 
         Parameters
         ----------
-        ctx
+        ctx :
+            opencl context
         tpl_filename
-        use_double
+            filename of source tempalte
+        use_double:
+            Use double precision floating point data types
         c_type:
             c_type to use. Overrides use_double
         """

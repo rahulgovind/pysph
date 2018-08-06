@@ -133,11 +133,11 @@ def _generate_nnps_code(sorted, wgs, setup, loop, vars, types,
     )
 
 
-def generate_body(setup, loop, vars, types, wgs):
+def generate_body(setup, loop, vars, types, wgs, c_type):
     return _generate_nnps_code(True, wgs, setup, loop, vars, types,
-                               'float')
+                               c_type)
 
 
-def get_kernel_args_list(data_t='float'):
-    args = NNPS_ARGS_TEMPLATE % {'data_t': data_t}
+def get_kernel_args_list(c_type='float'):
+    args = NNPS_ARGS_TEMPLATE % {'data_t': c_type}
     return args.split(",")

@@ -25,17 +25,17 @@ if (child_offset == -1) {
 %(output_expr)s;
 """
 
-DFS_TEMPLATE = r"""
+LEAF_DFS_TEMPLATE = r"""
     /*
      * Owner of properties -
-     * dst octree: cids, unique_cids
-     * src octree: offsets
+     * dst tree: cids, unique_cids
+     * src tree: offsets
      */
    int cid_dst = unique_cids[i];
 
     /*
      * Assuming max depth of 21
-     * stack_idx is also equal to current layer of octree
+     * stack_idx is also equal to current layer of tree
      * child_idx = number of children iterated through
      * idx_stack = current node
      */
@@ -73,7 +73,68 @@ DFS_TEMPLATE = r"""
         }
 
         // Recurse back to find node with a valid neighbor
-        while (child_stack[idx] >= %(powdim)s-1 && idx >= 0)
+        while (child_stack[idx] >= %(k)s-1 && idx >= 0)
+            idx--;
+
+        // Iterate to next neighbor
+        if (idx >= 0) {
+            cid_stack[idx]++;
+            child_stack[idx]++;
+        }
+    }
+
+    %(output_expr)s;
+"""
+
+POINT_DFS_TEMPLATE = r"""
+    /*
+     * Owner of properties -
+     * dst tree: cids, unique_cids
+     * src tree: offsets
+     */
+   int cid_dst = cids[i];
+
+    /*
+     * Assuming max depth of 21
+     * stack_idx is also equal to current layer of tree
+     * child_idx = number of children iterated through
+     * idx_stack = current node
+     */
+    char child_stack[%(max_depth)s];
+    int cid_stack[%(max_depth)s];
+
+    char idx = 0;
+    child_stack[0] = 0;
+    cid_stack[0] = 1;
+    char flag;
+    int cid_src;
+    int child_offset;
+
+    %(setup)s;
+    while (idx >= 0) {
+
+        // Recurse to find either leaf node or invalid node
+        cid_src = cid_stack[idx];
+
+        child_offset = offsets[cid_src];
+        %(common_operation)s;
+
+        while (child_offset != -1) {
+            %(node_operation)s;
+
+            idx++;
+            cid_src = child_offset;
+            cid_stack[idx] = cid_src;
+            child_stack[idx] = 0;
+            child_offset = offsets[cid_src];
+        }
+
+        if (child_offset == -1) {
+            %(leaf_operation)s;
+        }
+
+        // Recurse back to find node with a valid neighbor
+        while (child_stack[idx] >= %(k)s-1 && idx >= 0)
             idx--;
 
         // Iterate to next neighbor
@@ -87,8 +148,8 @@ DFS_TEMPLATE = r"""
 """
 
 
-def get_eye_str(k):
-    result = "uint%(k)s constant eye[%(k)s]  = {" % dict(k=k)
+def get_M_array_initialization(k):
+    result = "uint%(k)s constant M[%(k)s]  = {" % dict(k=k)
     for i in range(k):
         result += "(uint%(k)s)(%(init_value)s)," % dict(
             k=k, init_value=','.join((np.arange(k) >= i).astype(
@@ -98,31 +159,40 @@ def get_eye_str(k):
     return result
 
 
-# `(sfc[i] & mask) >> rshift` directly gives the octant (0-7) a particle
-# belongs to in a given layer
-# The segmented scan generates an array of vectors. Let's call this array v.
-# Then `v[i][j]` gives the number of particles before or at index `i` which are
-# going to be in octant `j` or an octant lesser than `j`.
-# Eg. v[23][4] gives the particles indexed between 0 and 23 which are going
-# to be in an octant from 0-4
+# This segmented scan is the core of the tree construction algorithm.
+# Please look at a few segmented scan examples here if you haven't already
+# https://en.wikipedia.org/wiki/Segmented_scan
+#
+# This scan generates an array `v` of k-dimensional vectors where v[i][j]
+# corresponds to how many particles are in the same node as particle `i`,
+# are ordered before it and are going to lie in childs 0..j.
+#
+# For example, consider the first layer. In this case v[23][4] gives the
+# particles numbered from 0 to 23 which are going to lie in children 0 to 4
+# of the root node. The segment flag bits just let us extend this to further
+# layers.
+#
+# The array of vectors M are just a math trick. M[j] gives a vector with j
+# zeros and k - j ones (With k = 4, M[1] = {0, 1, 1, 1}). Adding this up in
+# the prefix sum directly gives us the required result.
 @named_profile('particle_reordering')
 @memoize
 def _get_particle_kernel(ctx, k, args, index_code):
     return GenericScanKernel(
         ctx, get_vector_dtype('uint', k), neutral="0",
         arguments=r"""__global char *seg_flag,
-                    __global uint%(k)s *octant_vector,
+                    __global uint%(k)s *prefix_sum_vector,
                     """ % dict(k=k) + args,
-        input_expr="eye[%(index_code)s]" % dict(index_code=index_code),
+        input_expr="M[%(index_code)s]" % dict(index_code=index_code),
         scan_expr="(across_seg_boundary ? b : a + b)",
         is_segment_start_expr="seg_flag[i]",
-        output_statement=r"""octant_vector[i]=item;""",
-        preamble=get_eye_str(k)
+        output_statement=r"""prefix_sum_vector[i]=item;""",
+        preamble=get_M_array_initialization(k)
     )
 
 
 # The offset of a node's child is given by:
-# offset of first child in next layer + 8 * (number of non-leaf nodes before
+# offset of first child in next layer + k * (number of non-leaf nodes before
 # given node).
 # If the node is a leaf, we set this value to be -1.
 @named_profile('set_offset')
@@ -143,12 +213,16 @@ def _get_set_offset_kernel(ctx, k, leaf_size):
     )
 
 
-# Each particle belongs to a given cell and the cell is indexed as cid.
+# Each particle belongs to a given leaf / last layer node and this cell is
+# indexed by the cid array.
 # The unique_cids algorithm
 # 1) unique_cids_map: unique_cids_map[i] gives the number of unique_cids
 #                     before index i.
 # 2) unique_cids: List of unique cids.
 # 3) unique_cids_count: Number of unique cids
+#
+# Note that unique_cids also gives us the list of leaves / last layer nodes
+# which are not empty.
 @named_profile('unique_cids')
 @memoize
 def _get_unique_cids_kernel(ctx):
@@ -168,6 +242,8 @@ def _get_unique_cids_kernel(ctx):
     )
 
 
+# A lot of leaves are going to be empty. Not really sure if this guy is of
+# any use.
 @named_profile('leaves')
 @memoize
 def _get_leaves_kernel(ctx, leaf_size):
@@ -227,13 +303,13 @@ def tree_bottom_up(ctx, args, setup, leaf_operation, node_operation,
     kernel = ElementwiseKernel(ctx, args, operation=operation,
                                preamble=preamble)
 
-    def callable(octree, *args):
-        csum_nodes = octree.total_nodes
+    def callable(tree, *args):
+        csum_nodes = tree.total_nodes
         out = None
-        for i in range(octree.depth, -1, -1):
+        for i in range(tree.depth, -1, -1):
             csum_nodes_next = csum_nodes
-            csum_nodes -= octree.num_nodes[i]
-            out = kernel(octree.offsets.array, octree.pbounds.array,
+            csum_nodes -= tree.num_nodes[i]
+            out = kernel(tree.offsets.array, tree.pbounds.array,
                          *args,
                          slice=slice(csum_nodes, csum_nodes_next))
         return out
@@ -241,17 +317,19 @@ def tree_bottom_up(ctx, args, setup, leaf_operation, node_operation,
     return callable
 
 
+
 @memoize
 def leaf_tree_traverse(ctx, k, args, setup, node_operation, leaf_operation,
                        output_expr, common_operation, preamble=""):
-    operation = DFS_TEMPLATE % dict(
+    # FIXME: variable max_depth
+    operation = LEAF_DFS_TEMPLATE % dict(
         setup=setup,
         leaf_operation=leaf_operation,
         node_operation=node_operation,
         common_operation=common_operation,
         output_expr=output_expr,
         max_depth=21,
-        powdim=k
+        k=k
     )
 
     args = ', '.join(["int *unique_cids, int *cids, int *offsets", args])
@@ -259,18 +337,47 @@ def leaf_tree_traverse(ctx, k, args, setup, node_operation, leaf_operation,
     kernel = ElementwiseKernel(
         ctx, args, operation=operation, preamble=preamble)
 
-    def callable(octree_src, octree_dst, *args):
+    def callable(tree_src, tree_dst, *args):
         return kernel(
-            octree_dst.unique_cids.array[:octree_dst.unique_cid_count],
-            octree_dst.cids.array, octree_src.offsets.array, *args
+            tree_dst.unique_cids.array[:tree_dst.unique_cid_count],
+            tree_dst.cids.array, tree_src.offsets.array, *args
+        )
+
+    return callable
+
+
+@memoize
+def point_tree_traverse(ctx, k, args, setup, node_operation, leaf_operation,
+                        output_expr, common_operation, preamble=""):
+    # FIXME: variable max_depth
+    operation = POINT_DFS_TEMPLATE % dict(
+        setup=setup,
+        leaf_operation=leaf_operation,
+        node_operation=node_operation,
+        common_operation=common_operation,
+        output_expr=output_expr,
+        max_depth=21,
+        k=k
+    )
+
+    args = ', '.join(["int *cids, int *offsets", args])
+
+    kernel = ElementwiseKernel(
+        ctx, args, operation=operation, preamble=preamble)
+
+    def callable(tree_src, tree_dst, *args):
+        return kernel(
+            tree_dst.cids.array, tree_src.offsets.array, *args
         )
 
     return callable
 
 
 class Tree(object):
+    """k-ary Tree
+    """
+
     def __init__(self, n, k=8, leaf_size=32):
-        """k-ary tree"""
         self.ctx = get_context()
         self.queue = get_queue()
         self.sorted = False
@@ -278,27 +385,26 @@ class Tree(object):
 
         self.initialized = False
         self.preamble = ""
-        self.depth = 0
         self.leaf_size = leaf_size
         self.k = k
         self.n = n
         self.sorted = False
         self.depth = 0
 
-        self.data_vars = []
-        self.data_var_ctypes = []
-        self.data_var_dtypes = []
-        self.const_vars = []
-        self.const_var_ctypes = []
+        self.index_function_args = []
+        self.index_function_arg_ctypes = []
+        self.index_function_arg_dtypes = []
+        self.index_function_consts = []
+        self.index_function_const_ctypes = []
         self.index_code = ""
-        self.initialized = False
-        self.set_vars()
 
-    def set_vars(self):
+        self.set_index_function_info()
+
+    def set_index_function_info(self):
         raise NotImplementedError
 
     def get_data_args(self):
-        return [getattr(self, v) for v in self.data_vars]
+        return [getattr(self, v) for v in self.index_function_args]
 
     def get_index_constants(self, depth):
         raise NotImplementedError
@@ -310,7 +416,8 @@ class Tree(object):
         self.cids = DeviceArray(np.uint32, n=num_particles)
         self.cids.fill(0)
 
-        for var, dtype in zip(self.data_vars, self.data_var_dtypes):
+        for var, dtype in zip(self.index_function_args,
+                              self.index_function_arg_dtypes):
             setattr(self, var, DeviceArray(dtype, n=num_particles))
 
         # Filled after tree built
@@ -325,7 +432,7 @@ class Tree(object):
         self.cids.resize(num_particles)
         self.cids.fill(0)
 
-        for var in self.data_vars:
+        for var in self.index_function_args:
             getattr(self, var).resize(num_particles)
 
         # Filled after tree built
@@ -345,14 +452,17 @@ class Tree(object):
     # Core construction algorithm and helper functions
     ###########################################################################
 
-    # A little bit of manual book-keeping for temporary variables
-    # We could instead just allocate new arrays for each iteration of
-    # the build step and let the GC take care of stuff but this is probably
+    # A little bit of manual book-keeping for temporary variables.
+    # More specifically, these temporary variables would otherwise be thrown
+    # away after building each layer of the tree.
+    # We could instead just allocate new arrays after building each layer and
+    # and let the GC take care of stuff but I'm guessing this is a
     # a better approach to save on memory
     def _create_temp_vars(self, temp_vars):
         n = self.n
         temp_vars['pids'] = DeviceArray(np.uint32, n)
-        for var, dtype in zip(self.data_vars, self.data_var_dtypes):
+        for var, dtype in zip(self.index_function_args,
+                              self.index_function_arg_dtypes):
             temp_vars[var] = DeviceArray(dtype, n)
         temp_vars['cids'] = DeviceArray(np.uint32, n)
 
@@ -367,40 +477,42 @@ class Tree(object):
             del temp_vars[k]
 
     def _get_temp_data_args(self, temp_vars):
-        result = [temp_vars[v] for v in self.data_vars]
+        result = [temp_vars[v] for v in self.index_function_args]
         return result
 
-    def _reorder_particles(self, depth, octants, offsets_parent,
+    def _reorder_particles(self, depth, child_count_prefix_sum, offsets_parent,
                            pbounds_parent,
                            seg_flag, csum_nodes_prev, temp_vars):
         # Scan
 
         args = [('__global ' + ctype + ' *' + v) for v, ctype in
-                zip(self.data_vars, self.data_var_ctypes)]
+                zip(self.index_function_args, self.index_function_arg_ctypes)]
         args += [(ctype + ' ' + v) for v, ctype in
-                 zip(self.const_vars, self.const_var_ctypes)]
+                 zip(self.index_function_consts,
+                     self.index_function_const_ctypes)]
         args = ', '.join(args)
 
         particle_kernel = _get_particle_kernel(self.ctx, self.k,
                                                args, self.index_code)
-        args = [seg_flag.array, octants.array]
+        args = [seg_flag.array, child_count_prefix_sum.array]
         args += [x.array for x in self.get_data_args()]
         args += self.get_index_constants(depth)
         particle_kernel(*args)
 
         # Reorder particles
         reorder_particles = self.main_helper.get_kernel(
-            'reorder_particles', k=self.k, data_vars=tuple(self.data_vars),
-            data_var_ctypes=tuple(self.data_var_ctypes),
-            const_vars=tuple(self.const_vars),
-            const_var_ctypes=tuple(self.const_var_ctypes),
+            'reorder_particles', k=self.k,
+            data_vars=tuple(self.index_function_args),
+            data_var_ctypes=tuple(self.index_function_arg_ctypes),
+            const_vars=tuple(self.index_function_consts),
+            const_var_ctypes=tuple(self.index_function_const_ctypes),
             index_code=self.index_code
         )
 
         args = [self.pids.array, self.cids.array,
                 seg_flag.array,
                 pbounds_parent.array, offsets_parent.array,
-                octants.array,
+                child_count_prefix_sum.array,
                 temp_vars['pids'].array, temp_vars['cids'].array]
         args += [x.array for x in self.get_data_args()]
         args += [x.array for x in self._get_temp_data_args(temp_vars)]
@@ -410,7 +522,7 @@ class Tree(object):
         reorder_particles(*args)
         self._exchange_temp_vars(temp_vars)
 
-    def _compress_layers(self, offsets_temp, pbounds_temp):
+    def _merge_layers(self, offsets_temp, pbounds_temp):
         curr_offset = 0
         total_nodes = 0
 
@@ -432,14 +544,16 @@ class Tree(object):
             curr_offset += self.num_nodes[i]
 
     def _update_node_data(self, offsets_prev, pbounds_prev, offsets, pbounds,
-                          seg_flag, octants, csum_nodes, csum_nodes_next, n):
+                          seg_flag, child_count_prefix_sum, csum_nodes,
+                          csum_nodes_next, n):
         """Update node data and return number of children which are leaves."""
 
         # Update particle-related data of children
         set_node_data = self.main_helper.get_kernel("set_node_data", k=self.k)
         set_node_data(offsets_prev.array, pbounds_prev.array,
                       offsets.array, pbounds.array,
-                      seg_flag.array, octants.array, np.uint32(csum_nodes),
+                      seg_flag.array, child_count_prefix_sum.array,
+                      np.uint32(csum_nodes),
                       np.uint32(n))
 
         # Set children offsets
@@ -450,20 +564,50 @@ class Tree(object):
         return leaf_count.array[0].get()
 
     def _build_tree(self, fixed_depth=None):
-        """Build octree
-        """
+        # We build the tree one layer at a time. We stop building new
+        # layers after either all the
+        # nodes are leaves or after reaching the target depth (fixed_depth).
+        # At this point, the information for each layer is segmented / not
+        # contiguous in memory, and so we run a merge_layers procedure to
+        # move the data for all layers into a single array.
+        #
+        # The procedure for building each layer can be split up as follows
+        # 1) Determine which child each particle is going to belong to in the
+        #    next layer
+        # 2) Perform a kind of segmented scan over this. This gives us the
+        #    new order of the particles so that consecutive particles lie in the
+        #    same child
+        # 3) Reorder the particles based on this order
+        # 4) Create a new layer and set the node data for the new layer. We
+        #    get to know which particles belong to each node directly from the
+        #    results of step 2
+        # 5) Set the predicted offsets of the children of the nodes in the
+        #    new layer. If a node has fewer than leaf_size particles, it's a
+        #    leaf. A kind of prefix sum over this directly let's us know the
+        #    predicted offsets.
+        # Rinse and repeat for building more layers.
+        #
+        # Note that after building the last layer, the predicted offsets for
+        # the children might not be correctly since we're not going to build
+        # more layers. The _merge_layers procedure sets the offsets in the
+        # last layer to -1 to correct this.
+
         num_leaves_here = 0
         n = self.n
         temp_vars = {}
-        csum_nodes_prev = 0
-        csum_nodes = 1
+
         self.depth = 0
         self.num_nodes = [1]
+
+        # Cumulative sum of nodes in the previous layers
+        csum_nodes_prev = 0
+        csum_nodes = 1
 
         # Initialize temporary data (but persistent across layers)
         self._create_temp_vars(temp_vars)
 
-        octants = DeviceArray(get_vector_dtype('uint', self.k), n)
+        child_count_prefix_sum = DeviceArray(get_vector_dtype('uint', self.k),
+                                             n)
 
         seg_flag = DeviceArray(cl.cltypes.char, n)
         seg_flag.fill(0)
@@ -475,6 +619,7 @@ class Tree(object):
         pbounds_temp = [DeviceArray(cl.cltypes.uint2, 1)]
         pbounds_temp[-1].array[0].set(cl.cltypes.make_uint2(0, n))
 
+        # FIXME: Depths above 20 possible and feasible for binary / quad trees
         loop_lim = min(fixed_depth, 20)
 
         for depth in range(1, loop_lim):
@@ -490,21 +635,24 @@ class Tree(object):
             pbounds_temp.append(DeviceArray(cl.cltypes.uint2,
                                             self.num_nodes[-1]))
 
-            self._reorder_particles(depth, octants, offsets_temp[-2],
+            # Generate particle index and reorder the particles
+            self._reorder_particles(depth, child_count_prefix_sum,
+                                    offsets_temp[-2],
                                     pbounds_temp[-2], seg_flag,
                                     csum_nodes_prev,
                                     temp_vars)
+
             num_leaves_here = self._update_node_data(
                 offsets_temp[-2], pbounds_temp[-2],
                 offsets_temp[-1], pbounds_temp[-1],
-                seg_flag, octants,
+                seg_flag, child_count_prefix_sum,
                 csum_nodes, csum_nodes + self.num_nodes[-1], n
             )
 
             csum_nodes_prev = csum_nodes
             csum_nodes += self.num_nodes[-1]
 
-        self._compress_layers(offsets_temp, pbounds_temp)
+        self._merge_layers(offsets_temp, pbounds_temp)
         self._clean_temp_vars(temp_vars)
 
     ###########################################################################
@@ -532,7 +680,7 @@ class Tree(object):
         return leaves.array[:num_leaves], num_leaves
 
     def _sort(self):
-        """Set octree as being sorted
+        """Set tree as being sorted
 
         The particle array needs to be aligned by the caller!
         """
@@ -540,7 +688,7 @@ class Tree(object):
             self.sorted = 1
 
     ###########################################################################
-    # Octree API
+    # Tree API
     ###########################################################################
     def allocate_node_prop(self, dtype):
         return DeviceArray(dtype, self.total_nodes)
@@ -590,10 +738,21 @@ class Tree(object):
     def leaf_tree_traverse(self, args, setup, node_operation, leaf_operation,
                            output_expr, common_operation="", preamble=""):
         """
-        Traverse this (source) octree. One thread for each leaf of
-        destination octree.
+        Traverse this (source) tree. One thread for each leaf of
+        destination tree.
         """
 
         return leaf_tree_traverse(self.ctx, self.k, args, setup,
                                   node_operation, leaf_operation,
                                   output_expr, common_operation, preamble)
+
+    def point_tree_traverse(self, args, setup, node_operation, leaf_operation,
+                            output_expr, common_operation="", preamble=""):
+        """
+        Traverse this (source) tree. One thread for each particle of
+        destination tree.
+        """
+
+        return point_tree_traverse(self.ctx, self.k, args, setup,
+                                   node_operation, leaf_operation,
+                                   output_expr, common_operation, preamble)
