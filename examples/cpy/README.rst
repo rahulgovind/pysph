@@ -592,7 +592,8 @@ an array::
   unique_ary = unique_ary[:unique_count]
 
 The following points highlight some important details and quirks about using
-scans in cpy -
+scans in cpy
+
 1) The scan call does not return anything. All output must be handled manually.
    Usually this involves writing the results available in ``output_expr``
    (``prev_item``, ``item`` and ``last_item``) to an array.
