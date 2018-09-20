@@ -592,15 +592,15 @@ an array::
   unique_ary = unique_ary[:unique_count]
 
 The following points highlight some important details and quirks about using
-scans in cpy
+scans in cpy:
 
-1) The scan call does not return anything. All output must be handled manually.
+1. The scan call does not return anything. All output must be handled manually.
    Usually this involves writing the results available in ``output_expr``
    (``prev_item``, ``item`` and ``last_item``) to an array.
-2) If no input function is provided, ``input[i]`` is assumed to be the default
+2. If no input function is provided, ``input[i]`` is assumed to be the default
    input. This array must be provided through the ``input`` keyword argument
    when the scan is called.
-3) PyOpenCL specific. If a segmented scan is used, unlike PyOpenCL where the
+3. PyOpenCL specific. If a segmented scan is used, unlike PyOpenCL where the
    ``across_seg_boundary`` is used to handle the segment logic in the scan
    expression, in cpy the logic is handled automatically. More specifically,
    using ``a + b`` as the scan expression in cpy is equivalent to using
