@@ -600,6 +600,11 @@ scans in cpy:
 2. If no input function is provided, ``input[i]`` is assumed to be the default
    input. This array must be provided through the ``input`` keyword argument
    when the scan is called.
+3. ``input_expr`` might be evaluated multiple times. However, it can be assumed
+   that ``input_expr`` for an element or index ``i`` is not evaluated again
+   after the output expression ``output_expr`` for that element is
+   evaulated. Therefore, it is safe to write the output of a scan back to an
+   array that was also used for input like in the first example.
 3. PyOpenCL specific. If a segmented scan is used, unlike PyOpenCL where the
    ``across_seg_boundary`` is used to handle the segment logic in the scan
    expression, in cpy the logic is handled automatically. More specifically,
