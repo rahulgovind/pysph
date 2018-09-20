@@ -527,7 +527,7 @@ Scans are generalizations of prefix sums / cumulative sums and can be used as
 building blocks to construct a number of parallel algorithms. These include but
 not are limited to sorting, polynomial evaluation, and tree
 operations. Blelloch's literature on prefix sums (`Prefix Sums and Their
-Applications` <https://www.cs.cmu.edu/~guyb/papers/Ble93.pdf>) has many more
+Applications` https://www.cs.cmu.edu/~guyb/papers/Ble93.pdf) has many more
 examples and is a recommended read before using scans. The ``cpy.parallel``
 module provides a ``Scan`` class which can be used to develop and execute such
 scans. The scans can be run on GPUs using the OpenCL backend or on CPUs using
@@ -596,7 +596,7 @@ scans in cpy -
 1) The scan call does not return anything. All output must be handled
    manually. Usually this involves writing the results available in
    ``output_expr`` (``prev_item``, ``item`` and ``last_item``) to an array.
-2) If no input function is provided, input[i] is assumed to be the default
+2) If no input function is provided, ``input[i]`` is assumed to be the default
    input. This array must be provided through the ``input`` keyword argument
    when the scan is called.
 3) PyOpenCL specific. If a segmented scan is used, unlike PyOpenCL where the
