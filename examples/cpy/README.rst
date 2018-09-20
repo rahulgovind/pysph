@@ -600,7 +600,7 @@ scans in cpy:
 2. ``input_expr`` might be evaluated multiple times. However, it can be assumed
    that ``input_expr`` for an element or index ``i`` is not evaluated again
    after the output expression ``output_expr`` for that element is
-   evaulated. Therefore, it is safe to write the output of a scan back to an
+   evaluated. Therefore, it is safe to write the output of a scan back to an
    array also used for the input like in the first example.
 3. PyOpenCL specific. If a segmented scan is used, unlike PyOpenCL where the
    ``across_seg_boundary`` is used to handle the segment logic in the scan
