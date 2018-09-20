@@ -593,9 +593,9 @@ an array::
 
 The following points highlight some important details and quirks about using
 scans in cpy -
-1) The scan call does not return anything. All output must be handled
-   manually. Usually this involves writing the results available in
-   ``output_expr`` (``prev_item``, ``item`` and ``last_item``) to an array.
+1) The scan call does not return anything. All output must be handled manually.
+   Usually this involves writing the results available in ``output_expr``
+   (``prev_item``, ``item`` and ``last_item``) to an array.
 2) If no input function is provided, ``input[i]`` is assumed to be the default
    input. This array must be provided through the ``input`` keyword argument
    when the scan is called.
